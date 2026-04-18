@@ -8,8 +8,8 @@ Save format::
         frame_000001.npz
         ...
         images/
-            image_000000.png   # uint8 RGB
-            image_000001.png
+            image_000000.jpg   # uint8 RGB
+            image_000001.jpg
             ...
 """
 
@@ -86,7 +86,7 @@ def save_results(
 
         img_uint8 = (images[i].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
         cv2.imwrite(
-            os.path.join(images_dir, f"image_{i:06d}.png"),
+            os.path.join(images_dir, f"image_{i:06d}.jpg"),
             cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR),
         )
 
@@ -138,7 +138,7 @@ def load_results(
         for key in keys:
             predictions[key][out_idx] = frame_data[key]
 
-        img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.png")
+        img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.jpg")
         img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         images[out_idx] = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
