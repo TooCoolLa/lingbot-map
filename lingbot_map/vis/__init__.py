@@ -39,6 +39,11 @@ from lingbot_map.vis.sky_segmentation import (
 )
 from lingbot_map.vis.glb_export import predictions_to_glb
 
+try:
+    from lingbot_map.vis.rerun_viewer import RerunViewer
+except ImportError:
+    RerunViewer = None
+
 __all__ = [
     # Main viewer
     "PointCloudViewer",
@@ -46,6 +51,8 @@ __all__ = [
     "viser_wrapper",
     # GLB export
     "predictions_to_glb",
+    # Rerun viewer
+    "RerunViewer",
     # Utilities
     "CameraState",
     "colorize",

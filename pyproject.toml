@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 vis = ["viser>=0.2.23", "trimesh", "matplotlib", "onnxruntime", "requests"]
+rerun = ["rerun-sdk>=0.19"]
 demo = ["lingbot-map[vis]"]
 
 [build-system]

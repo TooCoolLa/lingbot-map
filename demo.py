@@ -284,6 +284,16 @@ def main():
     parser.add_argument("--export_preprocessed", type=str, default=None,
                         help="Export stride-sampled, resized/cropped images to this folder")
 
+    # Save / Rerun visualization
+    parser.add_argument("--save_results", type=str, default=None,
+                        help="Save inference results to this folder for later visualization")
+    parser.add_argument("--viz_rerun", action="store_true",
+                        help="Visualize with Rerun instead of viser")
+    parser.add_argument("--rerun_grpc_port", type=int, default=9876,
+                        help="Rerun gRPC port (only used with --viz_rerun)")
+    parser.add_argument("--rerun_web_port", type=int, default=9877,
+                        help="Rerun web viewer port (only used with --viz_rerun)")
+
     args = parser.parse_args()
     assert args.image_folder or args.video_path, \
         "Provide --image_folder or --video_path"
@@ -383,25 +393,46 @@ def main():
 
     predictions, images_cpu = postprocess(predictions, images_for_post)
 
+    # ── Save results ──────────────────────────────────────────────────────────
+    if args.save_results:
+        from lingbot_map.io import save_results
+        save_results(args.save_results, predictions, images_cpu)
+
     # ── Visualize ────────────────────────────────────────────────────────────
-    try:
-        from lingbot_map.vis import PointCloudViewer
-        viewer = PointCloudViewer(
-            pred_dict=prepare_for_visualization(predictions, images_cpu),
-            port=args.port,
-            vis_threshold=args.conf_threshold,
-            downsample_factor=args.downsample_factor,
-            point_size=args.point_size,
-            mask_sky=args.mask_sky,
-            image_folder=resolved_image_folder,
-            sky_mask_dir=args.sky_mask_dir,
-            sky_mask_visualization_dir=args.sky_mask_visualization_dir,
-        )
-        print(f"3D viewer at http://localhost:{args.port}")
-        viewer.run()
-    except ImportError:
-        print("viser not installed. Install with: pip install lingbot-map[vis]")
-        print(f"Predictions contain keys: {list(predictions.keys())}")
+    if args.viz_rerun:
+        try:
+            from lingbot_map.vis.rerun_viewer import RerunViewer
+            viewer = RerunViewer(
+                predictions=predictions,
+                images=images_cpu,
+                conf_threshold=args.conf_threshold,
+                grpc_port=args.rerun_grpc_port,
+                web_port=args.rerun_web_port,
+                mask_sky=args.mask_sky,
+                image_folder=resolved_image_folder,
+            )
+            viewer.run()
+        except ImportError:
+            print("rerun-sdk not installed. Install with: pip install rerun-sdk")
+    else:
+        try:
+            from lingbot_map.vis import PointCloudViewer
+            viewer = PointCloudViewer(
+                pred_dict=prepare_for_visualization(predictions, images_cpu),
+                port=args.port,
+                vis_threshold=args.conf_threshold,
+                downsample_factor=args.downsample_factor,
+                point_size=args.point_size,
+                mask_sky=args.mask_sky,
+                image_folder=resolved_image_folder,
+                sky_mask_dir=args.sky_mask_dir,
+                sky_mask_visualization_dir=args.sky_mask_visualization_dir,
+            )
+            print(f"3D viewer at http://localhost:{args.port}")
+            viewer.run()
+        except ImportError:
+            print("viser not installed. Install with: pip install lingbot-map[vis]")
+            print(f"Predictions contain keys: {list(predictions.keys())}")
 
 
 if __name__ == "__main__":
