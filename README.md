@@ -128,7 +128,6 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/a3ead57d-fe56-4ca9-9fa0-ae0e6dbc23f7" />
 <img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/42ae2ff4-9026-4879-a709-1ea98475ee1d" />
 
-We will provide more examples in the follow-up.
 
 ### Streaming Inference from Images
 
@@ -144,6 +143,7 @@ python demo.py --model_path /path/to/checkpoint.pt \
     --video_path video.mp4 --fps 10
 ```
 
+We will provide more examples in the follow-up.
 ### Streaming with Keyframe Interval
 
 Use `--keyframe_interval` to reduce KV cache memory by only keeping every N-th frame as a keyframe. Non-keyframe frames still produce predictions but are not stored in the cache. This is useful for long sequences which exceed 320 frames (We train with video RoPE on 320 views, so performance degrades when the KV cache stores more than 320 views. Using a keyframe strategy allows inference over longer sequences.).
