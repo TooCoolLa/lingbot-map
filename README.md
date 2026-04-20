@@ -118,8 +118,6 @@ python demo.py --model_path /path/to/lingbot-map.pt \
 python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/loop
 ```
-<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/33be6982-a182-4aaf-82ed-70d3c5ba970f" />
-<img width="252" height="556" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/0541d82d-9dcf-4452-81cb-5ac0c1aeb336" />
 
 
 ```bash
