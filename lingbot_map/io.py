@@ -15,6 +15,7 @@ Save format::
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional, Tuple
 
 import cv2
@@ -93,9 +94,23 @@ def save_results(
     print(f"Saved {S} frames to {save_dir}")
 
 
+def _load_frame(save_dir, keys, frame_idx, out_idx):
+    """Load a single frame's npz + image from disk."""
+    frame_data = np.load(os.path.join(save_dir, f"frame_{frame_idx:06d}.npz"))
+    arrays = {key: frame_data[key] for key in keys}
+
+    img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.jpg")
+    img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    image = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+
+    return out_idx, arrays, image
+
+
 def load_results(
     save_dir: str,
     frame_indices: Optional[list] = None,
+    num_workers: int = 8,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, dict]:
     """Load saved results from disk.
 
@@ -103,6 +118,8 @@ def load_results(
         save_dir: Directory saved by save_results().
         frame_indices: Optional list of frame indices to load.
             None = load all frames.
+        num_workers: Number of parallel threads for loading.
+            Set to 1 for sequential loading.
 
     Returns:
         (predictions, images, metadata):
@@ -133,15 +150,25 @@ def load_results(
 
     images = np.empty((len(frame_indices), 3, H, W), dtype=np.float32)
 
-    for out_idx, frame_idx in enumerate(frame_indices):
-        frame_data = np.load(os.path.join(save_dir, f"frame_{frame_idx:06d}.npz"))
-        for key in keys:
-            predictions[key][out_idx] = frame_data[key]
-
-        img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.jpg")
-        img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        images[out_idx] = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+    if num_workers <= 1:
+        # Sequential fallback
+        for out_idx, frame_idx in enumerate(frame_indices):
+            _, arrays, image = _load_frame(save_dir, keys, frame_idx, out_idx)
+            for key in keys:
+                predictions[key][out_idx] = arrays[key]
+            images[out_idx] = image
+    else:
+        # Parallel loading
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(_load_frame, save_dir, keys, frame_idx, out_idx)
+                for out_idx, frame_idx in enumerate(frame_indices)
+            ]
+            for future in as_completed(futures):
+                out_idx, arrays, image = future.result()
+                for key in keys:
+                    predictions[key][out_idx] = arrays[key]
+                images[out_idx] = image
 
     print(f"Loaded {len(frame_indices)} frames from {save_dir}")
     return predictions, images, metadata

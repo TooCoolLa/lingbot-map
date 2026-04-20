@@ -51,6 +51,10 @@ def main():
         "--image_folder", type=str, default=None,
         help="Path to original images (for sky segmentation)",
     )
+    parser.add_argument(
+        "--num_workers", type=int, default=8,
+        help="Number of parallel threads for loading results (1=sequential)",
+    )
 
     args = parser.parse_args()
 
@@ -60,6 +64,7 @@ def main():
 
     predictions, images, metadata = load_results(
         args.results_dir, frame_indices=frame_indices,
+        num_workers=args.num_workers,
     )
 
     viewer = RerunViewer(
