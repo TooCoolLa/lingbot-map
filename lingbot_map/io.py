@@ -23,6 +23,7 @@ import numpy as np
 import torch
 
 _SAVE_VERSION = 1
+_DEFAULT_SAVE_WORKERS = os.cpu_count() or 4
 
 _PER_FRAME_TENSOR_KEYS = [
     "extrinsic",          # (3, 4) float32
@@ -34,10 +35,34 @@ _PER_FRAME_TENSOR_KEYS = [
 ]
 
 
+def _save_frame(save_dir, images_dir, predictions, available_keys, images, i):
+    """Save a single frame's npz + image to disk."""
+    frame_data = {}
+    for key in available_keys:
+        val = predictions[key]
+        if isinstance(val, torch.Tensor):
+            val = val[i].detach().cpu().numpy()
+        else:
+            val = np.asarray(val)[i]
+        frame_data[key] = val.astype(np.float32)
+
+    np.savez_compressed(
+        os.path.join(save_dir, f"frame_{i:06d}.npz"),
+        **frame_data,
+    )
+
+    img_uint8 = (images[i].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
+    cv2.imwrite(
+        os.path.join(images_dir, f"image_{i:06d}.jpg"),
+        cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR),
+    )
+
+
 def save_results(
     save_dir: str,
     predictions: Dict[str, object],
     images: object,
+    num_workers: int = _DEFAULT_SAVE_WORKERS,
 ) -> None:
     """Save postprocessed predictions and images to disk.
 
@@ -47,6 +72,8 @@ def save_results(
             Required keys: extrinsic, intrinsic, depth, depth_conf,
             world_points, world_points_conf.
         images: Images tensor/array (S, 3, H, W) float32 in [0,1], on CPU.
+        num_workers: Number of parallel threads for saving.
+            Defaults to CPU count. Set to 1 for sequential saving.
     """
     os.makedirs(save_dir, exist_ok=True)
     images_dir = os.path.join(save_dir, "images")
@@ -61,26 +88,17 @@ def save_results(
 
     available_keys = [k for k in _PER_FRAME_TENSOR_KEYS if k in predictions]
 
-    for i in range(S):
-        frame_data = {}
-        for key in available_keys:
-            val = predictions[key]
-            if isinstance(val, torch.Tensor):
-                val = val[i].detach().cpu().numpy()
-            else:
-                val = np.asarray(val)[i]
-            frame_data[key] = val.astype(np.float32)
-
-        np.savez_compressed(
-            os.path.join(save_dir, f"frame_{i:06d}.npz"),
-            **frame_data,
-        )
-
-        img_uint8 = (images[i].transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
-        cv2.imwrite(
-            os.path.join(images_dir, f"image_{i:06d}.jpg"),
-            cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR),
-        )
+    if num_workers <= 1:
+        for i in range(S):
+            _save_frame(save_dir, images_dir, predictions, available_keys, images, i)
+    else:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(_save_frame, save_dir, images_dir, predictions, available_keys, images, i)
+                for i in range(S)
+            ]
+            for future in as_completed(futures):
+                future.result()
 
     # Write metadata after all frames are saved to avoid
     # inconsistent state if save is interrupted
