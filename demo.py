@@ -190,6 +190,9 @@ def postprocess(predictions, images):
                 k, predictions[k].to("cpu", non_blocking=True)
             )
     images_cpu = images.to("cpu", non_blocking=True)
+    # Squeeze batch dim for single-sequence outputs (matches prediction squeezing above)
+    if images_cpu.ndim == 5 and images_cpu.shape[0] == 1:
+        images_cpu = images_cpu[0]
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
