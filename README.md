@@ -92,7 +92,6 @@ Run `demo.py` for interactive 3D visualization via a browser-based [viser](https
 ### Try the Example Scenes
 
 We provide four example scenes in `example/` that you can run out of the box:
-
 ```bash
 # Church scene
 python demo.py --model_path /path/to/lingbot-map.pt \
@@ -129,7 +128,7 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/a3ead57d-fe56-4ca9-9fa0-ae0e6dbc23f7" />
 <img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/42ae2ff4-9026-4879-a709-1ea98475ee1d" />
 
-
+We will provide more examples in the follow-up.
 
 ### Streaming Inference from Images
 
