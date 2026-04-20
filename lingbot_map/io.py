@@ -60,15 +60,6 @@ def save_results(
     H, W = images.shape[2], images.shape[3]
 
     available_keys = [k for k in _PER_FRAME_TENSOR_KEYS if k in predictions]
-    metadata = {
-        "version": _SAVE_VERSION,
-        "num_frames": S,
-        "image_height": H,
-        "image_width": W,
-        "keys": available_keys,
-    }
-    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
-        json.dump(metadata, f, indent=2)
 
     for i in range(S):
         frame_data = {}
@@ -90,6 +81,18 @@ def save_results(
             os.path.join(images_dir, f"image_{i:06d}.jpg"),
             cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR),
         )
+
+    # Write metadata after all frames are saved to avoid
+    # inconsistent state if save is interrupted
+    metadata = {
+        "version": _SAVE_VERSION,
+        "num_frames": S,
+        "image_height": H,
+        "image_width": W,
+        "keys": available_keys,
+    }
+    with open(os.path.join(save_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
 
     print(f"Saved {S} frames to {save_dir}")
 
@@ -137,7 +140,15 @@ def load_results(
     keys = metadata["keys"]
 
     if frame_indices is None:
-        frame_indices = list(range(S))
+        # Auto-detect available frames from disk (handles incomplete saves)
+        available = sorted(
+            int(f.split("_")[1].split(".")[0])
+            for f in os.listdir(save_dir)
+            if f.startswith("frame_") and f.endswith(".npz")
+        )
+        frame_indices = available
+        if len(available) != S:
+            print(f"Warning: metadata says {S} frames but found {len(available)} npz files; using {len(available)}")
 
     # Load first frame to get shapes for pre-allocation
     first = np.load(os.path.join(save_dir, f"frame_{frame_indices[0]:06d}.npz"))
