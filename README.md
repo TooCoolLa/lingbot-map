@@ -97,19 +97,41 @@ We provide four example scenes in `example/` that you can run out of the box:
 # Church scene
 python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/church --mask_sky
+```
+<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/627fb738-03b0-4597-a7f8-fbc62cc296dc" />
 
+
+<img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/f34b2bc8-ef4a-4cdf-8049-5c01b7883562" />
+
+
+```bash
 # University scene
 python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/university --mask_sky
+```
+<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/e501fcb4-6da1-4919-8a73-0239d64457cd" />
+<img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/3d6c9a46-9004-49e6-9847-fee1c0cc87da" />
 
+
+```bash
 # Loop scene (loop closure trajectory)
 python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/loop
+```
+<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/33be6982-a182-4aaf-82ed-70d3c5ba970f" />
+<img width="252" height="556" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/0541d82d-9dcf-4452-81cb-5ac0c1aeb336" />
 
+
+```bash
 # Oxford scene with sky masking (outdoor, large scale scene)
 python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/oxford --mask_sky
 ```
+
+<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/a3ead57d-fe56-4ca9-9fa0-ae0e6dbc23f7" />
+<img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/42ae2ff4-9026-4879-a709-1ea98475ee1d" />
+
+
 
 ### Streaming Inference from Images
 
