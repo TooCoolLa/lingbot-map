@@ -269,7 +269,6 @@ def main():
     parser.add_argument(
         "--offload_to_cpu",
         action=argparse.BooleanOptionalAction,
-        default=True,
         help="Offload per-frame predictions to CPU during inference to cut GPU peak memory. "
              "Use --no-offload_to_cpu to keep outputs on GPU.",
     )

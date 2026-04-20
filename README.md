@@ -95,20 +95,20 @@ We provide four example scenes in `example/` that you can run out of the box:
 
 ```bash
 # Church scene
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/church --mask_sky
 
-# Oxford scene with sky masking (outdoor)
-python demo.py --model_path /path/to/checkpoint.pt \
-    --image_folder example/oxford --mask_sky
-
 # University scene
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/university --mask_sky
 
 # Loop scene (loop closure trajectory)
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/loop
+
+# Oxford scene with sky masking (outdoor, large scale scene)
+python demo.py --model_path /path/to/lingbot-map-long.pt \
+    --image_folder example/oxford --mask_sky
 ```
 
 ### Streaming Inference from Images
