@@ -257,8 +257,9 @@ def main():
     parser.add_argument(
         "--keyframe_interval",
         type=int,
-        default=1,
-        help="Streaming only. Every N-th frame after scale frames is kept as a keyframe. 1 = every frame.",
+        default=None,
+        help="Streaming only. Every N-th frame after scale frames is kept as a keyframe. 1 = every frame. "
+             "If unset, auto-selected: 1 when num_frames <= 320, else ceil(num_frames / 320).",
     )
     parser.add_argument("--kv_cache_sliding_window", type=int, default=64)
     parser.add_argument("--camera_num_iterations", type=int, default=4,
@@ -345,6 +346,16 @@ def main():
             f"alloc={torch.cuda.memory_allocated()/1e9:.2f} GB, "
             f"reserved={torch.cuda.memory_reserved()/1e9:.2f} GB"
         )
+
+    if args.keyframe_interval is None:
+        if args.mode == "streaming" and num_frames > 320:
+            args.keyframe_interval = (num_frames + 319) // 320
+            print(
+                f"Auto-selected --keyframe_interval={args.keyframe_interval} "
+                f"(num_frames={num_frames} > 320)."
+            )
+        else:
+            args.keyframe_interval = 1
 
     if args.mode != "streaming" and args.keyframe_interval != 1:
         print("Warning: --keyframe_interval only applies to --mode streaming. Ignoring it for windowed inference.")
