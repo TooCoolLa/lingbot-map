@@ -98,16 +98,25 @@ def save_results(
 
 
 def _load_frame(save_dir, keys, frame_idx, out_idx):
-    """Load a single frame's npz + image from disk."""
-    frame_data = np.load(os.path.join(save_dir, f"frame_{frame_idx:06d}.npz"))
-    arrays = {key: frame_data[key] for key in keys}
+    """Load a single frame's npz + image from disk.
 
-    img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.jpg")
-    img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    image = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+    Returns (out_idx, arrays, image) on success, or (out_idx, None, None) on failure.
+    """
+    try:
+        frame_data = np.load(os.path.join(save_dir, f"frame_{frame_idx:06d}.npz"))
+        arrays = {key: frame_data[key] for key in keys}
 
-    return out_idx, arrays, image
+        img_path = os.path.join(save_dir, "images", f"image_{frame_idx:06d}.jpg")
+        img_bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        image = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+
+        return out_idx, arrays, image
+    except Exception as e:
+        print(f"Warning: failed to load frame {frame_idx}: {e}")
+        return out_idx, None, None
 
 
 def load_results(
@@ -150,24 +159,39 @@ def load_results(
         if len(available) != S:
             print(f"Warning: metadata says {S} frames but found {len(available)} npz files; using {len(available)}")
 
-    # Load first frame to get shapes for pre-allocation
-    first = np.load(os.path.join(save_dir, f"frame_{frame_indices[0]:06d}.npz"))
+    # Probe first valid frame to get shapes for pre-allocation
+    first_arrays = None
+    for fi in frame_indices:
+        try:
+            first_data = np.load(os.path.join(save_dir, f"frame_{fi:06d}.npz"))
+            first_arrays = {key: first_data[key] for key in keys}
+            break
+        except Exception:
+            continue
+    if first_arrays is None:
+        raise RuntimeError(f"No valid frames found in {save_dir}")
+
     predictions = {}
     for key in keys:
         predictions[key] = np.empty(
-            (len(frame_indices),) + first[key].shape,
+            (len(frame_indices),) + first_arrays[key].shape,
             dtype=np.float32,
         )
 
     images = np.empty((len(frame_indices), 3, H, W), dtype=np.float32)
 
+    # Track which frames were successfully loaded
+    valid_mask = np.zeros(len(frame_indices), dtype=bool)
+
     if num_workers <= 1:
         # Sequential fallback
         for out_idx, frame_idx in enumerate(frame_indices):
             _, arrays, image = _load_frame(save_dir, keys, frame_idx, out_idx)
-            for key in keys:
-                predictions[key][out_idx] = arrays[key]
-            images[out_idx] = image
+            if arrays is not None:
+                for key in keys:
+                    predictions[key][out_idx] = arrays[key]
+                images[out_idx] = image
+                valid_mask[out_idx] = True
     else:
         # Parallel loading
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -177,9 +201,18 @@ def load_results(
             ]
             for future in as_completed(futures):
                 out_idx, arrays, image = future.result()
-                for key in keys:
-                    predictions[key][out_idx] = arrays[key]
-                images[out_idx] = image
+                if arrays is not None:
+                    for key in keys:
+                        predictions[key][out_idx] = arrays[key]
+                    images[out_idx] = image
+                    valid_mask[out_idx] = True
 
-    print(f"Loaded {len(frame_indices)} frames from {save_dir}")
+    # Trim to only valid frames
+    num_failed = int((~valid_mask).sum())
+    if num_failed > 0:
+        print(f"Warning: {num_failed} frame(s) failed to load and were skipped")
+        predictions = {key: val[valid_mask] for key, val in predictions.items()}
+        images = images[valid_mask]
+
+    print(f"Loaded {int(valid_mask.sum())} frames from {save_dir}")
     return predictions, images, metadata
