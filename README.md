@@ -130,30 +130,26 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 <img width="346" height="326" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/ae1eda30-70d6-4be6-87d1-b3206bee936c" />
 
 
-
-### Streaming Inference from Images
-
-```bash
-python demo.py --model_path /path/to/lingbot-map-long.pt \
-    --image_folder /path/to/images/
-```
-
-### Streaming Inference from Video
-
-```bash
-python demo.py --model_path /path/to/lingbot-map-long.pt \
-    --video_path video.mp4 --fps 10
-```
-
 We will provide more examples in the follow-up.
 ### Streaming with Keyframe Interval
 
 Use `--keyframe_interval` to reduce KV cache memory by only keeping every N-th frame as a keyframe. Non-keyframe frames still produce predictions but are not stored in the cache. This is useful for long sequences which exceed 320 frames (We train with video RoPE on 320 views, so performance degrades when the KV cache stores more than 320 views. Using a keyframe strategy allows inference over longer sequences.).
 
+**Dataset:** Download the demo sequences from [robbyant/lingbot-map-demo](https://huggingface.co/datasets/robbyant/lingbot-map-demo/tree/main) on Hugging Face.
+
+Example run on the `travel` sequence from the dataset above (sky masking on, 4 camera optimization iterations, keyframe every 2 frames):
+
 ```bash
-python demo.py --model_path /path/to/lingbot-map-long.pt \
-    --image_folder /path/to/images/ --keyframe_interval 6
+python demo.py \
+    --image_folder /path/to/lingbot-map-demo/travel/ \
+    --model_path /path/to/lingbot-map-long.pt \
+    --mask_sky \
+    --camera_num_iterations 4 \
+    --keyframe_interval 2
 ```
+<img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/9670c821-09bf-45c5-9f1a-11d913b4a033" />
+<img width="480" height="506" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/2d224204-1898-4d0d-b4f8-b8ae830e1d6c" />
+
 
 ### Windowed Inference (for long sequences, >3000 frames)
 
