@@ -224,7 +224,7 @@ def main():
                              'at a small accuracy cost).')
     parser.add_argument('--backend', choices=['sdpa', 'flashinfer', 'both'], default='flashinfer')
     parser.add_argument('--dtype', choices=['bf16', 'fp32', 'both'], default='bf16')
-    parser.add_argument('--compile', action='store_true', default=False,
+    parser.add_argument('--compile', action='store_true', default=True,
                         help='torch.compile hot modules (reduce-overhead) and drop point_head. '
                              'Typically ~5 FPS faster at 518×378.')
     parser.add_argument('--fa3', action='store_true',
