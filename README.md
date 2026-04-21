@@ -79,8 +79,8 @@ pip install -e ".[vis]"
 
 | Model Name | Huggingface Repository | ModelScope Repository | Description |
 | :--- | :--- | :--- | :--- |
-| lingbot-map | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Balanced and latest checkpoint — strong all-around performance across short and long sequences. |
-| lingbot-map-long | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Better suited for long sequences. |
+| lingbot-map-long | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Better suited for long sequences and large scale scenes (Recommend). |
+| lingbot-map | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Balanced checkpoint — trade off all-around performance across short and long sequences. |
 | lingbot-map-stage1 | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Stage-1 training checkpoint of lingbot-map — can be loaded into the VGGT model for bidirectional inference. |
 
 > 🚧 **Coming soon:** we're training an stronger model that supports longer sequences — stay tuned.
@@ -94,7 +94,7 @@ Run `demo.py` for interactive 3D visualization via a browser-based [viser](https
 We provide four example scenes in `example/` that you can run out of the box:
 ```bash
 # Church scene
-python demo.py --model_path /path/to/lingbot-map.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/church --mask_sky
 ```
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/627fb738-03b0-4597-a7f8-fbc62cc296dc" />
@@ -105,7 +105,7 @@ python demo.py --model_path /path/to/lingbot-map.pt \
 
 ```bash
 # University scene
-python demo.py --model_path /path/to/lingbot-map.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/university --mask_sky
 ```
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/e501fcb4-6da1-4919-8a73-0239d64457cd" />
@@ -115,7 +115,7 @@ python demo.py --model_path /path/to/lingbot-map.pt \
 
 ```bash
 # Loop scene (loop closure trajectory)
-python demo.py --model_path /path/to/lingbot-map.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/loop
 ```
 
@@ -134,14 +134,14 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 ### Streaming Inference from Images
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder /path/to/images/
 ```
 
 ### Streaming Inference from Video
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --video_path video.mp4 --fps 10
 ```
 
@@ -151,14 +151,14 @@ We will provide more examples in the follow-up.
 Use `--keyframe_interval` to reduce KV cache memory by only keeping every N-th frame as a keyframe. Non-keyframe frames still produce predictions but are not stored in the cache. This is useful for long sequences which exceed 320 frames (We train with video RoPE on 320 views, so performance degrades when the KV cache stores more than 320 views. Using a keyframe strategy allows inference over longer sequences.).
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder /path/to/images/ --keyframe_interval 6
 ```
 
 ### Windowed Inference (for long sequences, >3000 frames)
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --video_path video.mp4 --fps 10 \
     --mode windowed --window_size 128
 ```
