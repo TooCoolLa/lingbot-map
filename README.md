@@ -97,7 +97,8 @@ We provide four example scenes in `example/` that you can run out of the box:
 python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/church --mask_sky
 ```
-<img width="780" height="240" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/e43fc924-b8a6-43cf-aedd-13bb915c1d2d" />
+<img width="652" height="200" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/c7de79f5-78ee-4c6b-9a9c-64f5279a6e37" />
+
 
 
 
@@ -106,7 +107,8 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/university --mask_sky
 ```
-<img width="652" height="240" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/363322d8-1766-48b2-b305-f2c0adbfcc84" />
+<img width="544" height="200" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/4f2e1dea-11d6-4e1c-a313-f1302dc76256" />
+
 
 
 
@@ -116,7 +118,8 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/loop
 ```
-<img width="714" height="320" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/7cd9e1a0-14bb-41a0-9ce0-fa0890cdf6bb" />
+<img width="534" height="240" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/dd76f859-59cf-4538-a7d1-2f1f6b100ab3" />
+
 
 
 ```bash
@@ -124,7 +127,8 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/oxford --mask_sky
 ```
-<img width="608" height="240" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/7be7c5b6-fd32-472b-91ad-570ca578afa8" />
+<img width="506" height="200" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/73f6262b-4857-429f-add9-abbd6a8a4fe8" />
+
 
 
 
@@ -145,7 +149,8 @@ python demo.py \
     --camera_num_iterations 4 \
     --keyframe_interval 2
 ```
-<img width="600" height="220" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/2adb96aa-bed5-4b7b-97d1-763e2e52842c" />
+<img width="490" height="180" alt="output_pointcloud_side_by_side" src="https://github.com/user-attachments/assets/744a3f53-89ad-44a7-9f0c-5dd46ee06b35" />
+
 
 
 
