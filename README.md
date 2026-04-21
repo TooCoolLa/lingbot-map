@@ -109,7 +109,8 @@ python demo.py --model_path /path/to/lingbot-map.pt \
     --image_folder example/university --mask_sky
 ```
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/e501fcb4-6da1-4919-8a73-0239d64457cd" />
-<img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/3d6c9a46-9004-49e6-9847-fee1c0cc87da" />
+<img width="416" height="442" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/c495a719-d22d-42a4-8f79-fab312f91a5e" />
+
 
 
 ```bash
@@ -126,7 +127,8 @@ python demo.py --model_path /path/to/lingbot-map-long.pt \
 ```
 
 <img width="200" height="113" alt="output_pointcloud_original" src="https://github.com/user-attachments/assets/a3ead57d-fe56-4ca9-9fa0-ae0e6dbc23f7" />
-<img width="480" height="325" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/42ae2ff4-9026-4879-a709-1ea98475ee1d" />
+<img width="346" height="326" alt="output_pointcloud_cropped" src="https://github.com/user-attachments/assets/ae1eda30-70d6-4be6-87d1-b3206bee936c" />
+
 
 
 ### Streaming Inference from Images
