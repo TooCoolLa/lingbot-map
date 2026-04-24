@@ -79,8 +79,8 @@ pip install -e ".[vis]"
 
 | Model Name | Huggingface Repository | ModelScope Repository | Description |
 | :--- | :--- | :--- | :--- |
-| lingbot-map | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Balanced and latest checkpoint — strong all-around performance across short and long sequences. |
-| lingbot-map-long | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Better suited for long sequences. |
+| lingbot-map-long | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Better suited for long sequences and large scale scenes (Recommend). |
+| lingbot-map | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Balanced checkpoint — trade off all-around performance across short and long sequences. |
 | lingbot-map-stage1 | [robbyant/lingbot-map](https://huggingface.co/robbyant/lingbot-map) | [Robbyant/lingbot-map](https://www.modelscope.cn/models/Robbyant/lingbot-map) | Stage-1 training checkpoint of lingbot-map — can be loaded into the VGGT model for bidirectional inference. |
 
 > 🚧 **Coming soon:** we're training an stronger model that supports longer sequences — stay tuned.
@@ -92,52 +92,92 @@ Run `demo.py` for interactive 3D visualization via a browser-based [viser](https
 ### Try the Example Scenes
 
 We provide four example scenes in `example/` that you can run out of the box:
-
 ```bash
 # Church scene
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/church --mask_sky
+```
 
-# Oxford scene with sky masking (outdoor)
-python demo.py --model_path /path/to/checkpoint.pt \
-    --image_folder example/oxford --mask_sky
 
+https://github.com/user-attachments/assets/aa10f7ab-8024-43c7-92f8-d56159ec85c8
+
+
+
+
+
+
+```bash
 # University scene
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/university --mask_sky
+```
 
+
+https://github.com/user-attachments/assets/212a1744-6ff5-4ccf-9bd4-728608248b57
+
+
+
+
+
+
+
+```bash
 # Loop scene (loop closure trajectory)
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --image_folder example/loop
 ```
 
-### Streaming Inference from Images
+
+https://github.com/user-attachments/assets/5ae0a292-b081-40c6-838c-b7c1a0538d75
+
+
+
+
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
-    --image_folder /path/to/images/
+# Oxford scene with sky masking (outdoor, large scale scene)
+python demo.py --model_path /path/to/lingbot-map-long.pt \
+    --image_folder example/oxford --mask_sky
 ```
 
-### Streaming Inference from Video
 
-```bash
-python demo.py --model_path /path/to/checkpoint.pt \
-    --video_path video.mp4 --fps 10
-```
+https://github.com/user-attachments/assets/6b8daa95-9ed4-40b2-9902-7435779b886d
 
+
+
+
+
+
+We will provide more examples in the follow-up.
 ### Streaming with Keyframe Interval
 
 Use `--keyframe_interval` to reduce KV cache memory by only keeping every N-th frame as a keyframe. Non-keyframe frames still produce predictions but are not stored in the cache. This is useful for long sequences which exceed 320 frames (We train with video RoPE on 320 views, so performance degrades when the KV cache stores more than 320 views. Using a keyframe strategy allows inference over longer sequences.).
 
+**Dataset:** Download the demo sequences from [robbyant/lingbot-map-demo](https://huggingface.co/datasets/robbyant/lingbot-map-demo/tree/main) on Hugging Face.
+
+Example run on the `travel` sequence from the dataset above (sky masking on, 4 camera optimization iterations, keyframe every 2 frames):
+
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
-    --image_folder /path/to/images/ --keyframe_interval 6
+python demo.py \
+    --image_folder /path/to/lingbot-map-demo/travel/ \
+    --model_path /path/to/lingbot-map-long.pt \
+    --mask_sky \
+    --camera_num_iterations 4 \
+    --keyframe_interval 2
 ```
+
+
+https://github.com/user-attachments/assets/d350b590-d036-4363-af8c-7af3918338ef
+
+
+
+
+
 
 ### Windowed Inference (for long sequences, >3000 frames)
 
 ```bash
-python demo.py --model_path /path/to/checkpoint.pt \
+python demo.py --model_path /path/to/lingbot-map-long.pt \
     --video_path video.mp4 --fps 10 \
     --mode windowed --window_size 128
 ```
