@@ -116,7 +116,9 @@ def load_model(args, device):
         img_size=args.image_size,
         patch_size=args.patch_size,
         enable_3d_rope=args.enable_3d_rope,
+        enable_camera_3d_rope=args.enable_camera_3d_rope,
         max_frame_num=args.max_frame_num,
+        sliding_window_size=args.sliding_window,
         kv_cache_sliding_window=args.kv_cache_sliding_window,
         kv_cache_scale_frames=args.num_scale_frames,
         kv_cache_cross_frame_special=True,
@@ -315,6 +317,7 @@ def main():
 
     # Streaming options
     parser.add_argument("--enable_3d_rope", action="store_true", default=True)
+    parser.add_argument("--enable_camera_3d_rope", action="store_true", default=False)
     parser.add_argument("--max_frame_num", type=int, default=1024)
     parser.add_argument("--num_scale_frames", type=int, default=8)
     parser.add_argument(
@@ -325,6 +328,9 @@ def main():
              "If unset, auto-selected: 1 when num_frames <= 320, else ceil(num_frames / 320).",
     )
     parser.add_argument("--kv_cache_sliding_window", type=int, default=64)
+    parser.add_argument("--sliding_window", type=int, default=8,
+                        help="Temporal window size for the model. Larger values (e.g., 24, 32) improve "
+                             "stability in high-speed scenes but increase compute.")
     parser.add_argument("--camera_num_iterations", type=int, default=4,
                         help="Camera head iterative-refinement steps. Default 4; set 1 for faster inference "
                              "(skips 3 refinement passes at a small accuracy cost).")
