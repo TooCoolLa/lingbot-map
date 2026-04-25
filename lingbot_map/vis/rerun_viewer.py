@@ -135,7 +135,7 @@ class RerunViewer:
 
         self.intrinsic = intrinsic
 
-    def _filter_and_sample(self, frame_idx: int):
+    def _filter_and_sample(self, frame_idx: int, max_points: Optional[int] = None):
         """Filter by confidence and subsample points for a single frame.
 
         Returns:
@@ -161,8 +161,9 @@ class RerunViewer:
             return points, colors
 
         # Subsample if too many points
-        if len(points) > self.max_points_per_frame:
-            indices = np.random.choice(len(points), self.max_points_per_frame, replace=False)
+        max_pts = max_points or self.max_points_per_frame
+        if len(points) > max_pts:
+            indices = np.random.choice(len(points), max_pts, replace=False)
             indices.sort()
             points = points[indices]
             colors = colors[indices]
@@ -247,22 +248,20 @@ class RerunViewer:
 
         # Optional: Log the entire point cloud as a single static entity for global map view
         if self.global_map:
-            print("Generating and logging global map...")
-            all_pts = []
-            all_cols = []
-            # We sample fewer points per frame for the global map to keep Rerun responsive
             pts_per_frame = max(1000, self.max_points_per_frame // 10)
+            print(f"Generating global map (parallel with {self.num_workers} workers, {pts_per_frame} pts/frame)...")
             
-            for i in range(self.S):
-                pts, cols = self._filter_and_sample(i)
-                if len(pts) > pts_per_frame:
-                    idx = np.random.choice(len(pts), pts_per_frame, replace=False)
-                    pts, cols = pts[idx], cols[idx]
-                if len(pts) > 0:
-                    all_pts.append(pts)
-                    all_cols.append(cols)
+            if self.num_workers <= 1:
+                results = [self._filter_and_sample(i, pts_per_frame) for i in range(self.S)]
+            else:
+                with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                    results = list(executor.map(lambda i: self._filter_and_sample(i, pts_per_frame), range(self.S)))
+            
+            all_pts = [r[0] for r in results if len(r[0]) > 0]
+            all_cols = [r[1] for r in results if len(r[0]) > 0]
             
             if len(all_pts) > 0:
+                print(f"Logging {sum(len(p) for p in all_pts)} points to global map...")
                 rr.log(
                     "world/map",
                     rr.Points3D(
