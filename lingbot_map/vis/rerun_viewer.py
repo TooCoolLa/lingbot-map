@@ -59,14 +59,13 @@ class RerunViewer:
         image_folder: Path to images (for sky segmentation).
         num_workers: Number of parallel threads for logging frames.
             Defaults to CPU count.
-        global_map: If True, also log a static global map of all points.
     """
 
     def __init__(
         self,
         predictions: Dict,
         images,
-        conf_threshold: float = 1.5,
+        conf_threshold: float = 0.5,
         max_points_per_frame: int = 50000,
         point_radius: float = 0.03,
         grpc_port: int = 9876,
@@ -75,7 +74,6 @@ class RerunViewer:
         mask_sky: bool = False,
         image_folder: Optional[str] = None,
         num_workers: Optional[int] = None,
-        global_map: bool = True,
     ):
         self.conf_threshold = conf_threshold
         self.max_points_per_frame = max_points_per_frame
@@ -83,7 +81,6 @@ class RerunViewer:
         self.grpc_port = grpc_port
         self.web_port = web_port
         self.num_workers = num_workers or os.cpu_count() or 4
-        self.global_map = global_map
 
         self._prepare_data(predictions, images, use_point_map)
 
@@ -240,34 +237,8 @@ class RerunViewer:
         )
         rr.send_blueprint(blueprint)
 
-        # 3. Global Map (Best Practice: Log static map before dynamic stream)
-        if self.global_map:
-            pts_per_frame = max(1000, self.max_points_per_frame // 10)
-            print(f"Generating global map (parallel with {self.num_workers} workers, {pts_per_frame} pts/frame)...")
-            
-            if self.num_workers <= 1:
-                results = [self._filter_and_sample(i, pts_per_frame) for i in range(self.S)]
-            else:
-                with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                    results = list(executor.map(lambda i: self._filter_and_sample(i, pts_per_frame), range(self.S)))
-            
-            all_pts = [r[0] for r in results if len(r[0]) > 0]
-            all_cols = [r[1] for r in results if len(r[0]) > 0]
-            
-            if len(all_pts) > 0:
-                print(f"Logging {sum(len(p) for p in all_pts)} points to global map...")
-                rr.log(
-                    "world/map",
-                    rr.Points3D(
-                        positions=np.concatenate(all_pts),
-                        colors=np.concatenate(all_cols),
-                        radii=self.point_radius * 0.5,
-                    ),
-                    static=True,
-                )
-
-        # 4. Temporal Data Stream
-        print(f"Logging {self.S} frames to Rerun (parallel with {self.num_workers} workers)...")
+        # 3. Temporal Data Stream
+        print(f"Logging {self.S} frames to Rerun (parallel with {self.num_workers} workers, conf_threshold={self.conf_threshold})...")
         from tqdm import tqdm
         pbar = tqdm(total=self.S, desc="Logging frames")
         
