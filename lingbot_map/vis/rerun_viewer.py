@@ -66,7 +66,7 @@ class RerunViewer:
         predictions: Dict,
         images,
         conf_threshold: float = 0.5,
-        max_points_per_frame: int = 50000,
+        max_points_per_frame: int = 20000,
         point_radius: float = 0.03,
         grpc_port: int = 9876,
         web_port: int = 9877,
@@ -171,23 +171,9 @@ class RerunViewer:
         """Log a single frame's data to Rerun."""
         rr.set_time("frame", sequence=frame_idx)
 
-        # Point cloud
-        positions, colors = self._filter_and_sample(frame_idx)
-        if len(positions) > 0:
-            rr.log(
-                "world/points",
-                rr.Points3D(
-                    positions=positions,
-                    colors=colors,
-                    radii=self.point_radius,
-                ),
-            )
-
+        # 1. Camera setup (MUST be logged before children like image)
         # Camera transform (c2w)
         c2w = self.cam_to_world_4x4[frame_idx]
-        
-        # Log the transform from world to camera
-        # Transform3D(translation, mat3x3) where from_parent=False means camera-to-world
         rr.log(
             "world/camera",
             rr.Transform3D(
@@ -197,11 +183,10 @@ class RerunViewer:
             ),
         )
 
-        # Camera intrinsics
+        # Camera intrinsics (The Pinhole component)
         K = self.intrinsic[frame_idx].copy()
         
         # Scale K ONLY if it's still at model resolution (e.g. 80x60)
-        # If K[0, 2] (principal point x) is already close to self.W / 2, it's already scaled.
         model_H, model_W = self.world_points.shape[1:3]
         if K[0, 2] < model_W: 
             scale_x = self.W / model_W
@@ -220,9 +205,21 @@ class RerunViewer:
             ),
         )
 
-        # Camera image
-        img = self.images_hw3[frame_idx]  # (H, W, 3) uint8
+        # 2. Camera image (Now it has a Pinhole ancestor at 'world/camera')
+        img = self.images_hw3[frame_idx]
         rr.log("world/camera/image", rr.Image(img))
+
+        # 3. Point cloud (Standalone in world space)
+        positions, colors = self._filter_and_sample(frame_idx)
+        if len(positions) > 0:
+            rr.log(
+                "world/points",
+                rr.Points3D(
+                    positions=positions,
+                    colors=colors,
+                    radii=self.point_radius,
+                ),
+            )
 
     def run(self):
         """Initialize Rerun, log all frames, and serve."""
