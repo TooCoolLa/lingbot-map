@@ -67,7 +67,7 @@ class RerunViewer:
         images,
         conf_threshold: float = 0.5,
         max_points_per_frame: int = 20000,
-        point_radius: float = 0.03,
+        point_radius: float = 0.04,
         grpc_port: int = 9876,
         web_port: int = 9877,
         use_point_map: bool = True,
@@ -153,6 +153,11 @@ class RerunViewer:
         mask = conf > self.conf_threshold
         points = points[mask]
         colors = colors[mask]
+        
+        # DEBUG: Print stats for the first few frames to troubleshoot visibility
+        if frame_idx < 3:
+            max_c = conf.max() if len(conf) > 0 else 0
+            print(f"Frame {frame_idx}: {len(points)} points passed threshold {self.conf_threshold} (max conf: {max_c:.3f})")
 
         if len(points) == 0:
             return points, colors
@@ -201,7 +206,6 @@ class RerunViewer:
             rr.Pinhole(
                 resolution=[self.W, self.H],
                 image_from_camera=K.astype(np.float64),
-                camera_xyz=rr.ViewCoordinates.RDF,
             ),
         )
 
