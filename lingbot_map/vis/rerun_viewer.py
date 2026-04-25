@@ -185,19 +185,32 @@ class RerunViewer:
 
         # Camera transform (c2w)
         c2w = self.cam_to_world_4x4[frame_idx]
+        
+        # Log the transform from world to camera
+        # Transform3D(translation, mat3x3) where from_parent=False means camera-to-world
         rr.log(
             "world/camera",
             rr.Transform3D(
                 translation=c2w[:3, 3],
                 mat3x3=c2w[:3, :3],
-                from_parent=False,
+                from_parent=False, # Camera is child of World
             ),
         )
 
         # Camera intrinsics
-        K = self.intrinsic[frame_idx]
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
+        K = self.intrinsic[frame_idx].copy()
+        
+        # Scale K ONLY if it's still at model resolution (e.g. 80x60)
+        # If K[0, 2] (principal point x) is already close to self.W / 2, it's already scaled.
+        model_H, model_W = self.world_points.shape[1:3]
+        if K[0, 2] < model_W: 
+            scale_x = self.W / model_W
+            scale_y = self.H / model_H
+            K[0, 0] *= scale_x
+            K[1, 1] *= scale_y
+            K[0, 2] *= scale_x
+            K[1, 2] *= scale_y
+
         rr.log(
             "world/camera",
             rr.Pinhole(
