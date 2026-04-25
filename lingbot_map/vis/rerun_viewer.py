@@ -22,7 +22,9 @@ Usage from vis_rerun.py (standalone)::
     viewer.run()
 """
 
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional
 
 import numpy as np
@@ -55,6 +57,9 @@ class RerunViewer:
         use_point_map: Use world_points (True) or depth-based unprojection (False).
         mask_sky: Apply sky segmentation.
         image_folder: Path to images (for sky segmentation).
+        num_workers: Number of parallel threads for logging frames.
+            Defaults to CPU count.
+        global_map: If True, also log a static global map of all points.
     """
 
     def __init__(
@@ -69,12 +74,16 @@ class RerunViewer:
         use_point_map: bool = True,
         mask_sky: bool = False,
         image_folder: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        global_map: bool = True,
     ):
         self.conf_threshold = conf_threshold
         self.max_points_per_frame = max_points_per_frame
         self.point_radius = point_radius
         self.grpc_port = grpc_port
         self.web_port = web_port
+        self.num_workers = num_workers or os.cpu_count() or 4
+        self.global_map = global_map
 
         self._prepare_data(predictions, images, use_point_map)
 
@@ -216,6 +225,9 @@ class RerunViewer:
             open_browser=True,
         )
 
+        # Set up global world coordinate system (Right-Down-Forward for OpenCV)
+        rr.log("world", rr.ViewCoordinates.RDF, static=True)
+
         # Blueprint
         rr.send_blueprint(rrb.Vertical(
             rrb.Spatial3DView(name="3D Scene", origin="world"),
@@ -223,9 +235,44 @@ class RerunViewer:
         ))
 
         # Log all frames
-        print(f"Logging {self.S} frames to Rerun...")
-        for i in range(self.S):
-            self._log_frame(i)
+        print(f"Logging {self.S} frames to Rerun (parallel with {self.num_workers} workers)...")
+        if self.num_workers <= 1:
+            for i in range(self.S):
+                self._log_frame(i)
+        else:
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = [executor.submit(self._log_frame, i) for i in range(self.S)]
+                for future in as_completed(futures):
+                    future.result()  # Raise exceptions if any occurred
+
+        # Optional: Log the entire point cloud as a single static entity for global map view
+        if self.global_map:
+            print("Generating and logging global map...")
+            all_pts = []
+            all_cols = []
+            # We sample fewer points per frame for the global map to keep Rerun responsive
+            pts_per_frame = max(1000, self.max_points_per_frame // 10)
+            
+            for i in range(self.S):
+                pts, cols = self._filter_and_sample(i)
+                if len(pts) > pts_per_frame:
+                    idx = np.random.choice(len(pts), pts_per_frame, replace=False)
+                    pts, cols = pts[idx], cols[idx]
+                if len(pts) > 0:
+                    all_pts.append(pts)
+                    all_cols.append(cols)
+            
+            if len(all_pts) > 0:
+                rr.log(
+                    "world/map",
+                    rr.Points3D(
+                        positions=np.concatenate(all_pts),
+                        colors=np.concatenate(all_cols),
+                        radii=self.point_radius * 0.5,
+                    ),
+                    static=True,
+                )
+
         print(
             f"All frames logged. Rerun viewer at "
             f"http://localhost:{self.web_port}/?url=rerun%2Bhttp%3A%2F%2Flocalhost%3A{self.grpc_port}%2Fproxy"

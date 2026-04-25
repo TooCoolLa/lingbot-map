@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import os
 
 from lingbot_map.io import load_results
 from lingbot_map.vis.rerun_viewer import RerunViewer
@@ -52,8 +53,8 @@ def main():
         help="Path to original images (for sky segmentation)",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=8,
-        help="Number of parallel threads for loading results (1=sequential)",
+        "--num_workers", type=int, default=os.cpu_count() or 4,
+        help="Number of parallel threads for loading results and logging to Rerun (1=sequential)",
     )
 
     args = parser.parse_args()
@@ -78,6 +79,7 @@ def main():
         use_point_map=not args.use_depth,
         mask_sky=args.mask_sky,
         image_folder=args.image_folder,
+        num_workers=args.num_workers,
     )
     viewer.run()
 
