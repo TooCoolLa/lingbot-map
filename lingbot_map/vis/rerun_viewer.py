@@ -217,7 +217,7 @@ class RerunViewer:
     def run(self):
         """Initialize Rerun, log all frames, and serve."""
         # CRITICAL: rr.init() must come before rr.serve_grpc()
-        rr.init("lingbot_map")
+        rr.init("lingbot_map", spawn=False) # We use serve_web_viewer instead of spawn
 
         grpc_uri = rr.serve_grpc(grpc_port=self.grpc_port)
         rr.serve_web_viewer(
@@ -226,27 +226,21 @@ class RerunViewer:
             open_browser=True,
         )
 
+        # 1. Global Static Settings (Best Practice)
         # Set up global world coordinate system (Right-Down-Forward for OpenCV)
         rr.log("world", rr.ViewCoordinates.RDF, static=True)
 
-        # Blueprint
-        rr.send_blueprint(rrb.Vertical(
-            rrb.Spatial3DView(name="3D Scene", origin="world"),
-            rrb.Spatial2DView(name="Camera Image", origin="world/camera/image"),
-        ))
+        # 2. Blueprint (Best Practice: Use Blueprint objects)
+        blueprint = rrb.Blueprint(
+            rrb.Vertical(
+                rrb.Spatial3DView(name="3D Scene", origin="world"),
+                rrb.Spatial2DView(name="Camera Image", origin="world/camera/image"),
+            ),
+            collapse_panels=True,
+        )
+        rr.send_blueprint(blueprint)
 
-        # Log all frames
-        print(f"Logging {self.S} frames to Rerun (parallel with {self.num_workers} workers)...")
-        if self.num_workers <= 1:
-            for i in range(self.S):
-                self._log_frame(i)
-        else:
-            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                futures = [executor.submit(self._log_frame, i) for i in range(self.S)]
-                for future in as_completed(futures):
-                    future.result()  # Raise exceptions if any occurred
-
-        # Optional: Log the entire point cloud as a single static entity for global map view
+        # 3. Global Map (Best Practice: Log static map before dynamic stream)
         if self.global_map:
             pts_per_frame = max(1000, self.max_points_per_frame // 10)
             print(f"Generating global map (parallel with {self.num_workers} workers, {pts_per_frame} pts/frame)...")
@@ -271,6 +265,30 @@ class RerunViewer:
                     ),
                     static=True,
                 )
+
+        # 4. Temporal Data Stream
+        print(f"Logging {self.S} frames to Rerun (parallel with {self.num_workers} workers)...")
+        from tqdm import tqdm
+        pbar = tqdm(total=self.S, desc="Logging frames")
+        
+        def log_and_update(i):
+            try:
+                self._log_frame(i)
+            finally:
+                pbar.update(1)
+
+        if self.num_workers <= 1:
+            for i in range(self.S):
+                log_and_update(i)
+        else:
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = [executor.submit(log_and_update, i) for i in range(self.S)]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"Error logging frame: {e}")
+        pbar.close()
 
         print(
             f"All frames logged. Rerun viewer at "
