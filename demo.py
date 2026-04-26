@@ -352,10 +352,13 @@ def main():
 
     # Visualization
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--conf_threshold", type=float, default=1.5)
+    parser.add_argument("--conf_percentile", type=float, default=50.0,
+                        help="Filter out the lowest N% of points (0-100)")
     parser.add_argument("--downsample_factor", type=int, default=10)
     parser.add_argument("--point_size", type=float, default=0.00001)
-    parser.add_argument("--mask_sky", action="store_true", help="Apply sky segmentation to filter out sky points")
+    parser.add_argument("--mask_sky", action="store_false", dest="mask_sky", 
+                        help="Disable sky segmentation (enabled by default)")
+    parser.set_defaults(mask_sky=True)
     parser.add_argument("--sky_mask_dir", type=str, default=None,
                         help="Directory for cached sky masks (default: <image_folder>_sky_masks/)")
     parser.add_argument("--sky_mask_visualization_dir", type=str, default=None,
@@ -528,7 +531,7 @@ def main():
             viewer = RerunViewer(
                 predictions=predictions,
                 images=images_cpu,
-                conf_threshold=args.conf_threshold,
+                conf_threshold=args.conf_percentile,
                 grpc_port=args.rerun_grpc_port,
                 web_port=args.rerun_web_port,
                 mask_sky=args.mask_sky,
@@ -543,7 +546,7 @@ def main():
             viewer = PointCloudViewer(
                 pred_dict=prepare_for_visualization(predictions, images_cpu),
                 port=args.port,
-                vis_threshold=args.conf_threshold,
+                vis_threshold=args.conf_percentile,
                 downsample_factor=args.downsample_factor,
                 point_size=args.point_size,
                 mask_sky=args.mask_sky,

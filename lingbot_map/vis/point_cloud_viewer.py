@@ -80,14 +80,14 @@ class PointCloudViewer:
         device: str = "cpu",
         port: int = 8080,
         show_camera: bool = True,
-        vis_threshold: float = 1.0,
+        vis_threshold: float = 50.0,
         size: int = 512,
         downsample_factor: int = 10,
         point_size: float = 0.00001,
         pred_dict: Optional[Dict] = None,
         init_conf_threshold: float = 50.0,
         use_point_map: bool = False,
-        mask_sky: bool = False,
+        mask_sky: bool = True,
         image_folder: Optional[str] = None,
         sky_mask_dir: Optional[str] = None,
         sky_mask_visualization_dir: Optional[str] = None,
@@ -100,7 +100,7 @@ class PointCloudViewer:
         self.server.gui.configure_theme(titlebar_content=None, control_layout="collapsible")
         self.device = device
         self.conf_list = conf_list
-        self.vis_threshold = vis_threshold
+        self.vis_threshold = vis_threshold  # This is now a percentile (0-100)
         self.point_size = point_size
         self.tt = lambda x: torch.from_numpy(x).float().to(device)
 
@@ -415,8 +415,9 @@ class PointCloudViewer:
             "Show Camera", initial_value=self.show_camera
         )
         self.vis_threshold_slider = self.server.gui.add_slider(
-            "Visibility Threshold", min=1.0, max=5.0, step=0.01,
+            "Confidence Percentile", min=0.0, max=100.0, step=0.1,
             initial_value=self.vis_threshold,
+            hint="Filter out the lowest N% of points based on confidence."
         )
         self.camera_downsample_slider = self.server.gui.add_slider(
             "Camera Downsample Factor", min=1, max=50, step=1, initial_value=1
@@ -564,6 +565,9 @@ class PointCloudViewer:
         @self.vis_threshold_slider.on_update
         def _(_) -> None:
             self.vis_threshold = self.vis_threshold_slider.value
+            if hasattr(self, "all_conf_flat") and self.all_conf_flat is not None:
+                self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
+                print(f"  Percentile {self.vis_threshold}% -> absolute threshold {self.abs_threshold:.4f}")
             self._regenerate_point_clouds()
 
         @self.camera_downsample_slider.on_update
@@ -1024,6 +1028,8 @@ class PointCloudViewer:
         """Read and organize point cloud data."""
         pcs = {}
         step_list = []
+        all_conf_values = []
+        
         for i, pc in enumerate(pc_list):
             step = i
             pcs.update({
@@ -1038,6 +1044,20 @@ class PointCloudViewer:
                 }
             })
             step_list.append(step)
+            
+            # Collect confidence values for global percentile calculation
+            if conf_list[i] is not None and conf_list[i].size > 0:
+                c = conf_list[i].reshape(-1)
+                # Filter out obvious invalid values to make percentile more stable
+                all_conf_values.append(c[c > 1e-6])
+
+        if all_conf_values:
+            self.all_conf_flat = np.concatenate(all_conf_values)
+            # Pre-calculate the absolute threshold based on current percentage
+            self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
+        else:
+            self.all_conf_flat = None
+            self.abs_threshold = 0.0
 
         # Generate camera gradient colors
         num_cameras = len(pc_list)
@@ -1080,7 +1100,8 @@ class PointCloudViewer:
         # Confidence threshold filter
         if conf is not None:
             conf_flat = conf.reshape(-1) if conf.ndim > 1 else conf
-            mask = conf_flat > self.vis_threshold
+            # Use pre-calculated absolute threshold (based on percentile)
+            mask = conf_flat >= getattr(self, "abs_threshold", 0.0)
             pred_pts = pred_pts[mask]
             color = color[mask]
 
