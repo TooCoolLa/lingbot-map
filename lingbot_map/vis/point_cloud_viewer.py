@@ -1053,8 +1053,13 @@ class PointCloudViewer:
 
         if all_conf_values:
             self.all_conf_flat = np.concatenate(all_conf_values)
-            # Pre-calculate the absolute threshold based on current percentage
-            self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
+            if self.all_conf_flat.size > 0:
+                # Pre-calculate the absolute threshold based on current percentage
+                self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
+            else:
+                print("Warning: No points with confidence > 1e-6 found. Setting threshold to 0.")
+                self.all_conf_flat = None
+                self.abs_threshold = 0.0
         else:
             self.all_conf_flat = None
             self.abs_threshold = 0.0
