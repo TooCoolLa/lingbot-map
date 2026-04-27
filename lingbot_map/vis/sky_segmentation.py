@@ -10,6 +10,7 @@ Sky segmentation utilities for filtering sky points from point clouds.
 
 import glob
 import os
+import concurrent.futures
 from typing import Optional, Tuple
 
 import numpy as np
@@ -102,15 +103,6 @@ def segment_sky_from_array(
 ) -> np.ndarray:
     """
     Segment sky from an image array using ONNX model.
-
-    Args:
-        image: Input image as numpy array (H, W, 3) or (3, H, W), values in [0, 1] or [0, 255]
-        skyseg_session: ONNX runtime inference session
-        target_h: Target output height
-        target_w: Target output width
-
-    Returns:
-        Continuous non-sky confidence map in [0, 1].
     """
     image_rgb = _image_to_rgb_uint8(image)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
@@ -126,14 +118,6 @@ def segment_sky(
 ) -> np.ndarray:
     """
     Segment sky from an image using ONNX model.
-
-    Args:
-        image_path: Path to the input image
-        skyseg_session: ONNX runtime inference session
-        output_path: Optional path to save the mask
-
-    Returns:
-        Continuous non-sky confidence map in [0, 1].
     """
     image = cv2.imread(image_path)
     if image is None:
@@ -144,9 +128,6 @@ def segment_sky(
     mask = _result_map_to_non_sky_conf(result_map)
 
     if output_path is not None:
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
         cv2.imwrite(output_path, _mask_to_uint8(mask))
 
     return mask
@@ -161,16 +142,8 @@ def _list_image_files(image_folder: str) -> list[str]:
 def _image_to_rgb_uint8(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3 and image.shape[0] == 3 and image.shape[-1] != 3:
         image = image.transpose(1, 2, 0)
-
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(f"Expected image with shape (H, W, 3) or (3, H, W), got {image.shape}")
-
     if image.dtype != np.uint8:
-        image = image.astype(np.float32)
-        if image.max() <= 1.0:
-            image = image * 255.0
-        image = np.clip(image, 0.0, 255.0).astype(np.uint8)
-
+        image = (np.clip(image, 0, 1) * 255).astype(np.uint8) if image.max() <= 1.01 else image.astype(np.uint8)
     return image
 
 
@@ -187,11 +160,7 @@ def _save_sky_mask_visualization(
 ) -> None:
     image_rgb = _image_to_rgb_uint8(image)
     if sky_mask.shape[:2] != image_rgb.shape[:2]:
-        sky_mask = cv2.resize(
-            sky_mask,
-            (image_rgb.shape[1], image_rgb.shape[0]),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        sky_mask = cv2.resize(sky_mask, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
 
     mask_uint8 = _mask_to_uint8(sky_mask)
     mask_rgb = np.repeat(mask_uint8[..., None], 3, axis=2)
@@ -201,9 +170,6 @@ def _save_sky_mask_visualization(
     overlay = np.clip(overlay, 0.0, 255.0).astype(np.uint8)
 
     panel = np.concatenate([image_rgb, mask_rgb, overlay], axis=1)
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
     cv2.imwrite(output_path, cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
 
 
@@ -217,157 +183,72 @@ def load_or_create_sky_masks(
     target_shape: Optional[Tuple[int, int]] = None,
     num_frames: Optional[int] = None,
 ) -> Optional[np.ndarray]:
-    """
-    Load cached sky masks or generate them with the ONNX model.
-
-    Args:
-        image_folder: Folder containing input images.
-        image_paths: Optional explicit image file list, in the exact order to process.
-        images: Optional image array with shape (S, 3, H, W) or (S, H, W, 3).
-        skyseg_model_path: Path to the sky segmentation ONNX model.
-        sky_mask_dir: Optional directory for cached raw masks.
-        sky_mask_visualization_dir: Optional directory for side-by-side visualizations.
-        target_shape: Optional output mask shape (H, W) after resizing.
-        num_frames: Optional maximum number of frames to process.
-
-    Returns:
-        Sky masks with shape (S, H, W), or None if sky segmentation could not run.
-    """
     if onnxruntime is None:
-        print("Warning: onnxruntime not available, skipping sky segmentation")
-        return None
-
-    if image_folder is None and image_paths is None and images is None:
-        print("Warning: Neither image_folder/image_paths nor images provided, skipping sky segmentation")
         return None
 
     if not os.path.exists(skyseg_model_path):
-        print(f"Sky segmentation model not found at {skyseg_model_path}, downloading...")
-        try:
-            download_skyseg_model(skyseg_model_path)
-        except Exception as e:
-            print(f"Warning: Failed to download sky segmentation model: {e}")
-            return None
+        download_skyseg_model(skyseg_model_path)
 
     skyseg_session = onnxruntime.InferenceSession(skyseg_model_path)
     sky_masks = []
 
-    if sky_mask_visualization_dir is not None:
-        os.makedirs(sky_mask_visualization_dir, exist_ok=True)
-        print(f"Saving sky mask visualizations to {sky_mask_visualization_dir}")
+    # Setup directories
+    if image_paths is None and image_folder is not None:
+        image_paths = _list_image_files(image_folder)
+    
+    if sky_mask_dir is None and image_folder is not None:
+        sky_mask_dir = image_folder.rstrip("/") + "_sky_masks"
+    _prepare_sky_mask_cache(sky_mask_dir)
 
-    if images is not None:
-        if image_paths is None and image_folder is not None:
-            image_paths = _list_image_files(image_folder)
+    num_images = images.shape[0] if images is not None else len(image_paths)
+    if num_frames is not None:
+        num_images = min(num_images, num_frames)
 
-        num_images = images.shape[0]
-        if num_frames is not None:
-            num_images = min(num_images, num_frames)
-        if image_paths is not None:
-            image_paths = image_paths[:num_images]
+    # Use ThreadPool for Async I/O
+    io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
-        if sky_mask_dir is None and image_folder is not None:
-            sky_mask_dir = image_folder.rstrip("/") + "_sky_masks"
-        _prepare_sky_mask_cache(sky_mask_dir)
-
-        print("Generating sky masks from image array...")
-        for i in tqdm(range(num_images)):
-            image_rgb = _image_to_rgb_uint8(images[i])
-            image_h, image_w = image_rgb.shape[:2]
-            image_name = _get_mask_filename(image_paths, i)
-            mask_filepath = os.path.join(sky_mask_dir, image_name) if sky_mask_dir is not None else None
-
-            if mask_filepath is not None and os.path.exists(mask_filepath):
-                sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-                if sky_mask is not None and sky_mask.shape[:2] == (image_h, image_w):
-                    # Reuse cached mask
-                    pass
-                else:
-                    sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_h, image_w)
-                    cv2.imwrite(mask_filepath, _mask_to_uint8(sky_mask))
-            else:
-                sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_h, image_w)
-                if mask_filepath is not None:
-                    cv2.imwrite(mask_filepath, _mask_to_uint8(sky_mask))
-
-            if sky_mask_visualization_dir is not None:
-                _save_sky_mask_visualization(
-                    image_rgb,
-                    sky_mask,
-                    os.path.join(sky_mask_visualization_dir, image_name),
-                )
-
-            if target_shape is not None and sky_mask.shape[:2] != target_shape:
-                sky_mask = cv2.resize(
-                    sky_mask,
-                    (target_shape[1], target_shape[0]),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-
-            sky_masks.append(_mask_to_float(sky_mask))
-
-    else:
-        if image_paths is None and image_folder is not None:
-            image_paths = _list_image_files(image_folder)
-
-    if images is None and image_paths is not None:
-        if len(image_paths) == 0:
-            print("Warning: No image files provided, skipping sky segmentation")
-            return None
-
-        if num_frames is not None:
-            image_paths = image_paths[:num_frames]
-
-        if sky_mask_dir is None:
-            if image_folder is None:
-                image_folder = os.path.dirname(image_paths[0])
-            sky_mask_dir = image_folder.rstrip("/") + "_sky_masks"
-        _prepare_sky_mask_cache(sky_mask_dir)
-
-        print("Generating sky masks from image files...")
-        for image_path in tqdm(image_paths):
-            image_name = os.path.basename(image_path)
-            mask_filepath = os.path.join(sky_mask_dir, image_name)
-
-            if os.path.exists(mask_filepath):
-                sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-                if sky_mask is None:
-                    print(f"Warning: Failed to read cached sky mask {mask_filepath}, regenerating it")
-                    sky_mask = segment_sky(image_path, skyseg_session, mask_filepath)
-            else:
-                sky_mask = segment_sky(image_path, skyseg_session, mask_filepath)
-
-            if sky_mask is None:
-                print(f"Warning: Failed to produce sky mask for {image_path}, skipping frame")
+    print(f"Processing {num_images} sky masks (with async I/O)...")
+    for i in tqdm(range(num_images)):
+        image_name = _get_mask_filename(image_paths, i)
+        mask_filepath = os.path.join(sky_mask_dir, image_name) if sky_mask_dir is not None else None
+        
+        sky_mask = None
+        if mask_filepath and os.path.exists(mask_filepath):
+            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
+            # Basic validation of cached mask
+            if sky_mask is not None:
+                # Resize if target_shape is provided
+                if target_shape is not None and sky_mask.shape[:2] != target_shape:
+                    sky_mask = cv2.resize(sky_mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+                sky_masks.append(_mask_to_float(sky_mask))
                 continue
 
-            if sky_mask_visualization_dir is not None:
-                image_bgr = cv2.imread(image_path)
-                if image_bgr is not None:
-                    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-                    _save_sky_mask_visualization(
-                        image_rgb,
-                        sky_mask,
-                        os.path.join(sky_mask_visualization_dir, image_name),
-                    )
+        # Inference needed
+        if images is not None:
+            image_rgb = _image_to_rgb_uint8(images[i])
+            image_h, image_w = image_rgb.shape[:2]
+            sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_h, image_w)
+        else:
+            image_path = image_paths[i]
+            image_bgr = cv2.imread(image_path)
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_bgr.shape[0], image_bgr.shape[1])
+        
+        # Async Save
+        if mask_filepath:
+            io_executor.submit(cv2.imwrite, mask_filepath, _mask_to_uint8(sky_mask))
+        
+        if sky_mask_visualization_dir:
+            viz_path = os.path.join(sky_mask_visualization_dir, image_name)
+            io_executor.submit(_save_sky_mask_visualization, image_rgb, sky_mask, viz_path)
 
-            if target_shape is not None and sky_mask.shape[:2] != target_shape:
-                sky_mask = cv2.resize(
-                    sky_mask,
-                    (target_shape[1], target_shape[0]),
-                    interpolation=cv2.INTER_LINEAR,
-                )
+        if target_shape is not None and sky_mask.shape[:2] != target_shape:
+            sky_mask = cv2.resize(sky_mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+        
+        sky_masks.append(_mask_to_float(sky_mask))
 
-            sky_masks.append(_mask_to_float(sky_mask))
-
-    if len(sky_masks) == 0:
-        print("Warning: No sky masks generated, skipping sky segmentation")
-        return None
-
-    try:
-        return np.stack(sky_masks, axis=0)
-    except ValueError:
-        return np.array(sky_masks, dtype=object)
+    io_executor.shutdown(wait=False)
+    return np.stack(sky_masks) if sky_masks else None
 
 
 def apply_sky_segmentation(
@@ -379,79 +260,29 @@ def apply_sky_segmentation(
     sky_mask_dir: Optional[str] = None,
     sky_mask_visualization_dir: Optional[str] = None,
 ) -> np.ndarray:
-    """
-    Apply sky segmentation to confidence scores.
-
-    Args:
-        conf: Confidence scores with shape (S, H, W)
-        image_folder: Path to the folder containing input images (optional if images provided)
-        image_paths: Optional explicit image file list in processing order
-        images: Image array with shape (S, 3, H, W) or (S, H, W, 3) (optional if image_folder provided)
-        skyseg_model_path: Path to the sky segmentation ONNX model
-        sky_mask_dir: Optional directory for cached raw masks
-        sky_mask_visualization_dir: Optional directory for side-by-side mask visualization images
-
-    Returns:
-        Updated confidence scores with sky regions masked out
-    """
     S, H, W = conf.shape
-
     sky_mask_array = load_or_create_sky_masks(
-        image_folder=image_folder,
-        image_paths=image_paths,
-        images=images,
-        skyseg_model_path=skyseg_model_path,
-        sky_mask_dir=sky_mask_dir,
+        image_folder=image_folder, image_paths=image_paths, images=images,
+        skyseg_model_path=skyseg_model_path, sky_mask_dir=sky_mask_dir,
         sky_mask_visualization_dir=sky_mask_visualization_dir,
-        target_shape=(H, W),
-        num_frames=S,
+        target_shape=(H, W), num_frames=S,
     )
-    if sky_mask_array is None:
-        return conf
-
-    if sky_mask_array.shape[0] < S:
-        print(
-            f"Warning: Only {sky_mask_array.shape[0]} sky masks generated for {S} frames; "
-            "leaving the remaining frames unmasked"
-        )
-        padded = np.zeros((S, H, W), dtype=sky_mask_array.dtype)
-        padded[: sky_mask_array.shape[0]] = sky_mask_array
-        sky_mask_array = padded
-    elif sky_mask_array.shape[0] > S:
-        sky_mask_array = sky_mask_array[:S]
-
+    if sky_mask_array is None: return conf
+    sky_mask_array = sky_mask_array[:S]
     sky_mask_binary = (sky_mask_array > _SKYSEG_SOFT_THRESHOLD).astype(np.float32)
-    conf = conf * sky_mask_binary
-
-    print("Sky segmentation applied successfully")
-    return conf
+    return conf * sky_mask_binary
 
 
 def download_skyseg_model(output_path: str = "skyseg.onnx") -> str:
-    """
-    Download sky segmentation model from HuggingFace.
-
-    Args:
-        output_path: Path to save the model
-
-    Returns:
-        Path to the downloaded model
-    """
     import requests
-
     url = "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx"
-
     print(f"Downloading sky segmentation model from {url}...")
     response = requests.get(url, stream=True)
     response.raise_for_status()
-
     total_size = int(response.headers.get('content-length', 0))
-
     with open(output_path, 'wb') as f:
         with tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
                 pbar.update(len(chunk))
-
-    print(f"Model saved to {output_path}")
     return output_path
