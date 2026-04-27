@@ -11,7 +11,7 @@ Sky segmentation utilities for filtering sky points from point clouds.
 import glob
 import os
 import concurrent.futures
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import numpy as np
 import cv2
@@ -101,42 +101,11 @@ def segment_sky_from_array(
     target_h: int,
     target_w: int
 ) -> np.ndarray:
-    """
-    Segment sky from an image array using ONNX model.
-    """
     image_rgb = _image_to_rgb_uint8(image)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     result_map = run_skyseg(skyseg_session, _SKYSEG_INPUT_SIZE, image_bgr)
     result_map = cv2.resize(result_map, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
     return _result_map_to_non_sky_conf(result_map)
-
-
-def segment_sky(
-    image_path: str,
-    skyseg_session,
-    output_path: Optional[str] = None
-) -> np.ndarray:
-    """
-    Segment sky from an image using ONNX model.
-    """
-    image = cv2.imread(image_path)
-    if image is None:
-        raise ValueError(f"Failed to read image: {image_path}")
-
-    result_map = run_skyseg(skyseg_session, _SKYSEG_INPUT_SIZE, image)
-    result_map = cv2.resize(result_map, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-    mask = _result_map_to_non_sky_conf(result_map)
-
-    if output_path is not None:
-        cv2.imwrite(output_path, _mask_to_uint8(mask))
-
-    return mask
-
-
-def _list_image_files(image_folder: str) -> list[str]:
-    image_files = sorted(glob.glob(os.path.join(image_folder, "*")))
-    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
-    return [f for f in image_files if os.path.splitext(f.lower())[1] in image_extensions]
 
 
 def _image_to_rgb_uint8(image: np.ndarray) -> np.ndarray:
@@ -173,6 +142,18 @@ def _save_sky_mask_visualization(
     cv2.imwrite(output_path, cv2.cvtColor(panel, cv2.COLOR_RGB2BGR))
 
 
+def _load_cached_mask(filepath: str, target_shape: Optional[Tuple[int, int]] = None) -> Optional[np.ndarray]:
+    """Helper to load and optionally resize a cached mask."""
+    if not os.path.exists(filepath):
+        return None
+    mask = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return None
+    if target_shape is not None and mask.shape[:2] != target_shape:
+        mask = cv2.resize(mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
+    return _mask_to_float(mask)
+
+
 def load_or_create_sky_masks(
     image_folder: Optional[str] = None,
     image_paths: Optional[list[str]] = None,
@@ -186,71 +167,94 @@ def load_or_create_sky_masks(
     if onnxruntime is None:
         return None
 
+    # Setup directories
+    if image_paths is None and image_folder is not None:
+        image_paths = sorted(glob.glob(os.path.join(image_folder, "*")))
+        # Filter common image extensions
+        image_paths = [p for p in image_paths if p.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+    
+    if sky_mask_dir is None and image_folder is not None:
+        sky_mask_dir = image_folder.rstrip("/") + "_sky_masks"
+    
+    num_images = images.shape[0] if images is not None else (len(image_paths) if image_paths else 0)
+    if num_frames is not None:
+        num_images = min(num_images, num_frames)
+    
+    if num_images == 0:
+        return None
+
+    # 1. Parallel Cache Detection & Loading
+    sky_masks = [None] * num_images
+    missing_indices = []
+    
+    if sky_mask_dir:
+        _prepare_sky_mask_cache(sky_mask_dir)
+        print(f"Scanning for cached sky masks in {sky_mask_dir}...")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 8) as executor:
+            future_to_idx = {}
+            for i in range(num_images):
+                img_name = _get_mask_filename(image_paths, i)
+                mask_path = os.path.join(sky_mask_dir, img_name)
+                future_to_idx[executor.submit(_load_cached_mask, mask_path, target_shape)] = i
+            
+            for future in tqdm(concurrent.futures.as_completed(future_to_idx), total=num_images, desc="Checking cache"):
+                idx = future_to_idx[future]
+                res = future.result()
+                if res is not None:
+                    sky_masks[idx] = res
+                else:
+                    missing_indices.append(idx)
+        
+        missing_indices.sort()
+        cached_count = num_images - len(missing_indices)
+        print(f"  Found {cached_count} cached masks, {len(missing_indices)} frames need inference.")
+    else:
+        missing_indices = list(range(num_images))
+
+    if not missing_indices:
+        return np.stack(sky_masks)
+
+    # 2. Inference for missing frames
     if not os.path.exists(skyseg_model_path):
         download_skyseg_model(skyseg_model_path)
 
     providers = onnxruntime.get_available_providers()
     selected_providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"] if p in providers]
     skyseg_session = onnxruntime.InferenceSession(skyseg_model_path, providers=selected_providers)
-    sky_masks = []
-
-    # Setup directories
-    if image_paths is None and image_folder is not None:
-        image_paths = _list_image_files(image_folder)
     
-    if sky_mask_dir is None and image_folder is not None:
-        sky_mask_dir = image_folder.rstrip("/") + "_sky_masks"
-    _prepare_sky_mask_cache(sky_mask_dir)
-
-    num_images = images.shape[0] if images is not None else len(image_paths)
-    if num_frames is not None:
-        num_images = min(num_images, num_frames)
-
-    # Use ThreadPool for Async I/O
-    io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
-
-    print(f"Processing {num_images} sky masks (with async I/O)...")
-    for i in tqdm(range(num_images)):
-        image_name = _get_mask_filename(image_paths, i)
-        mask_filepath = os.path.join(sky_mask_dir, image_name) if sky_mask_dir is not None else None
-        
-        sky_mask = None
-        if mask_filepath and os.path.exists(mask_filepath):
-            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-            # Basic validation of cached mask
-            if sky_mask is not None:
-                # Resize if target_shape is provided
-                if target_shape is not None and sky_mask.shape[:2] != target_shape:
-                    sky_mask = cv2.resize(sky_mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
-                sky_masks.append(_mask_to_float(sky_mask))
-                continue
-
-        # Inference needed
+    io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    print(f"Running inference for {len(missing_indices)} frames (Async I/O enabled)...")
+    
+    for i in tqdm(missing_indices, desc="Inference"):
         if images is not None:
             image_rgb = _image_to_rgb_uint8(images[i])
             image_h, image_w = image_rgb.shape[:2]
-            sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_h, image_w)
         else:
-            image_path = image_paths[i]
-            image_bgr = cv2.imread(image_path)
+            image_bgr = cv2.imread(image_paths[i])
             image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-            sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_bgr.shape[0], image_bgr.shape[1])
+            image_h, image_w = image_bgr.shape[:2]
+            
+        sky_mask = segment_sky_from_array(image_rgb, skyseg_session, image_h, image_w)
         
         # Async Save
-        if mask_filepath:
-            io_executor.submit(cv2.imwrite, mask_filepath, _mask_to_uint8(sky_mask))
-        
-        if sky_mask_visualization_dir:
-            viz_path = os.path.join(sky_mask_visualization_dir, image_name)
-            io_executor.submit(_save_sky_mask_visualization, image_rgb, sky_mask, viz_path)
+        if sky_mask_dir:
+            img_name = _get_mask_filename(image_paths, i)
+            mask_path = os.path.join(sky_mask_dir, img_name)
+            io_executor.submit(cv2.imwrite, mask_path, _mask_to_uint8(sky_mask))
+            
+            if sky_mask_visualization_dir:
+                viz_path = os.path.join(sky_mask_visualization_dir, img_name)
+                io_executor.submit(_save_sky_mask_visualization, image_rgb, sky_mask, viz_path)
 
+        # Post-process for final output
         if target_shape is not None and sky_mask.shape[:2] != target_shape:
             sky_mask = cv2.resize(sky_mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
         
-        sky_masks.append(_mask_to_float(sky_mask))
+        sky_masks[i] = _mask_to_float(sky_mask)
 
     io_executor.shutdown(wait=False)
-    return np.stack(sky_masks) if sky_masks else None
+    return np.stack(sky_masks)
 
 
 def apply_sky_segmentation(
