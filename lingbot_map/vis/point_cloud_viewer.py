@@ -248,10 +248,19 @@ class PointCloudViewer:
                 if len(pc) > 1000:
                     pc = pc[::len(pc) // 1000]
                 all_pts.append(pc)
-            all_pts = np.concatenate(all_pts, axis=0)
-            center = np.median(all_pts, axis=0)
-            extent = np.percentile(all_pts, 95, axis=0) - np.percentile(all_pts, 5, axis=0)
-            scale = np.linalg.norm(extent)
+            
+            if all_pts:
+                all_pts = np.concatenate(all_pts, axis=0)
+                if all_pts.size > 0:
+                    center = np.median(all_pts, axis=0)
+                    extent = np.percentile(all_pts, 95, axis=0) - np.percentile(all_pts, 5, axis=0)
+                    scale = np.linalg.norm(extent)
+                else:
+                    center = np.zeros(3)
+                    scale = 1.0
+            else:
+                center = np.zeros(3)
+                scale = 1.0
 
         return center, max(scale, 0.1)
 
@@ -565,7 +574,7 @@ class PointCloudViewer:
         @self.vis_threshold_slider.on_update
         def _(_) -> None:
             self.vis_threshold = self.vis_threshold_slider.value
-            if hasattr(self, "all_conf_flat") and self.all_conf_flat is not None:
+            if hasattr(self, "all_conf_flat") and self.all_conf_flat is not None and self.all_conf_flat.size > 0:
                 self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
                 print(f"  Percentile {self.vis_threshold}% -> absolute threshold {self.abs_threshold:.4f}")
             self._regenerate_point_clouds()
@@ -692,9 +701,12 @@ class PointCloudViewer:
         ], axis=1)  # (N, 4)
 
         # Compute scene scale for camera sizing
-        lo = np.percentile(vertices, 5, axis=0)
-        hi = np.percentile(vertices, 95, axis=0)
-        scene_scale = max(np.linalg.norm(hi - lo), 0.1)
+        if len(vertices) > 0:
+            lo = np.percentile(vertices, 5, axis=0)
+            hi = np.percentile(vertices, 95, axis=0)
+            scene_scale = max(np.linalg.norm(hi - lo), 0.1)
+        else:
+            scene_scale = 1.0
 
         scene_3d = trimesh.Scene()
 
@@ -1049,7 +1061,9 @@ class PointCloudViewer:
             if conf_list[i] is not None and conf_list[i].size > 0:
                 c = conf_list[i].reshape(-1)
                 # Filter out obvious invalid values to make percentile more stable
-                all_conf_values.append(c[c > 1e-6])
+                c_valid = c[c > 1e-6]
+                if c_valid.size > 0:
+                    all_conf_values.append(c_valid)
 
         if all_conf_values:
             self.all_conf_flat = np.concatenate(all_conf_values)

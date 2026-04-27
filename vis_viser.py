@@ -23,15 +23,33 @@ def load_frame(f, results_dir):
     if "world_points" in data:
         frame_data["world_points"] = data["world_points"]
     
-    # Load corresponding image
-    frame_idx = os.path.basename(f).replace("frame_", "").replace(".npz", "")
-    img_path = os.path.join(results_dir, f"frame_{frame_idx}.png")
-    if os.path.exists(img_path):
-        img = np.array(Image.open(img_path).convert("RGB")).astype(np.float32) / 255.0
-        frame_data["image"] = img.transpose(2, 0, 1) # (3, H, W)
+    # Extract frame index for path construction
+    # Compatible with frame_000000.npz and similar formats
+    basename = os.path.basename(f)
+    frame_idx_str = "".join(filter(str.isdigit, basename))
+    frame_idx = int(frame_idx_str) if frame_idx_str else 0
+    
+    # Try multiple possible image paths for compatibility
+    possible_img_paths = [
+        os.path.join(results_dir, f"frame_{frame_idx_str}.png"),
+        os.path.join(results_dir, f"frame_{frame_idx:06d}.png"),
+        os.path.join(results_dir, "images", f"image_{frame_idx:06d}.jpg"),
+        os.path.join(results_dir, "images", f"image_{frame_idx:06d}.png"),
+    ]
+    
+    img_path = None
+    for p in possible_img_paths:
+        if os.path.exists(p):
+            img_path = p
+            break
+            
+    if img_path:
+        # Load as uint8 to save memory during parallel loading
+        img = np.array(Image.open(img_path).convert("RGB"))
+        frame_data["image_u8"] = img # (H, W, 3)
     else:
         H, W = data["depth"].shape[:2]
-        frame_data["image"] = np.zeros((3, H, W), dtype=np.float32)
+        frame_data["image_u8"] = np.zeros((H, W, 3), dtype=np.uint8)
     
     return frame_data
 
@@ -59,18 +77,24 @@ def load_saved_results(results_dir, stride=1, first_k=-1, max_workers=8):
             idx = future_to_idx[future]
             results[idx] = future.result()
 
-    # Reorganize into pred_dict
+    print("Stacking arrays...")
+    # Reorganize into pred_dict, converting images to float32 at the last moment
     pred_dict = {
         "depth": np.stack([r["depth"] for r in results]),
         "depth_conf": np.stack([r["depth_conf"] for r in results]),
         "extrinsic": np.stack([r["extrinsic"] for r in results]),
         "intrinsic": np.stack([r["intrinsic"] for r in results]),
-        "images": np.stack([r["image"] for r in results]),
+        # Convert (S, H, W, 3) u8 -> (S, 3, H, W) f32
+        "images": np.stack([r["image_u8"] for r in results]).transpose(0, 3, 1, 2).astype(np.float32) / 255.0,
     }
     
     if "world_points" in results[0]:
         pred_dict["world_points"] = np.stack([r["world_points"] for r in results])
-        pred_dict["world_points_conf"] = pred_dict["depth_conf"]
+        # Use world_points_conf if available, otherwise fallback to depth_conf
+        if "world_points_conf" in results[0]:
+             pred_dict["world_points_conf"] = np.stack([r["world_points_conf"] for r in results])
+        else:
+             pred_dict["world_points_conf"] = pred_dict["depth_conf"]
 
     return pred_dict
 

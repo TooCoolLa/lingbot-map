@@ -131,8 +131,11 @@ def viser_wrapper(
     )
 
     # Create the main point cloud
-    init_threshold_val = np.percentile(conf_flat, init_conf_threshold)
-    init_conf_mask = (conf_flat >= init_threshold_val) & (conf_flat > 0.1)
+    if conf_flat is not None and conf_flat.size > 0:
+        init_threshold_val = np.percentile(conf_flat, init_conf_threshold)
+    else:
+        init_threshold_val = 0.0
+    init_conf_mask = (conf_flat >= init_threshold_val) & (conf_flat > 0.1) if conf_flat is not None else np.array([], dtype=bool)
     point_cloud = server.scene.add_point_cloud(
         name="viser_pcd",
         points=points_centered[init_conf_mask],
@@ -195,10 +198,16 @@ def viser_wrapper(
     def update_point_cloud() -> None:
         """Update point cloud based on current GUI selections."""
         current_percentage = gui_points_conf.value
-        threshold_val = np.percentile(conf_flat, current_percentage)
+        if conf_flat is not None and conf_flat.size > 0:
+            threshold_val = np.percentile(conf_flat, current_percentage)
+        else:
+            threshold_val = 0.0
         print(f"Threshold absolute value: {threshold_val}, percentage: {current_percentage}%")
 
-        conf_mask = (conf_flat >= threshold_val) & (conf_flat > 1e-5)
+        if conf_flat is not None:
+            conf_mask = (conf_flat >= threshold_val) & (conf_flat > 1e-5)
+        else:
+            conf_mask = np.array([], dtype=bool)
 
         if gui_frame_selector.value == "All":
             frame_mask = np.ones_like(conf_mask, dtype=bool)
