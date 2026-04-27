@@ -108,6 +108,34 @@ def segment_sky_from_array(
     return _result_map_to_non_sky_conf(result_map)
 
 
+def segment_sky(
+    image_path: str,
+    skyseg_session,
+    output_path: Optional[str] = None
+) -> np.ndarray:
+    """
+    Segment sky from an image using ONNX model.
+    """
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Failed to read image: {image_path}")
+
+    result_map = run_skyseg(skyseg_session, _SKYSEG_INPUT_SIZE, image)
+    result_map = cv2.resize(result_map, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+    mask = _result_map_to_non_sky_conf(result_map)
+
+    if output_path is not None:
+        cv2.imwrite(output_path, _mask_to_uint8(mask))
+
+    return mask
+
+
+def _list_image_files(image_folder: str) -> list[str]:
+    image_files = sorted(glob.glob(os.path.join(image_folder, "*")))
+    image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+    return [f for f in image_files if os.path.splitext(f.lower())[1] in image_extensions]
+
+
 def _image_to_rgb_uint8(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3 and image.shape[0] == 3 and image.shape[-1] != 3:
         image = image.transpose(1, 2, 0)
