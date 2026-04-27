@@ -575,8 +575,11 @@ class PointCloudViewer:
         def _(_) -> None:
             self.vis_threshold = self.vis_threshold_slider.value
             if hasattr(self, "all_conf_flat") and self.all_conf_flat is not None and self.all_conf_flat.size > 0:
-                self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
-                print(f"  Percentile {self.vis_threshold}% -> absolute threshold {self.abs_threshold:.4f}")
+                try:
+                    self.abs_threshold = float(np.percentile(self.all_conf_flat, self.vis_threshold))
+                    print(f"  Percentile {self.vis_threshold}% -> absolute threshold {self.abs_threshold:.4f}")
+                except Exception as e:
+                    print(f"  Warning: Slider update failed to calculate percentile: {e}")
             self._regenerate_point_clouds()
 
         @self.camera_downsample_slider.on_update
@@ -1066,12 +1069,20 @@ class PointCloudViewer:
                     all_conf_values.append(c_valid)
 
         if all_conf_values:
-            self.all_conf_flat = np.concatenate(all_conf_values)
+            # Flatten to 1D and remove NaNs/Infs
+            flat_conf = np.concatenate(all_conf_values).reshape(-1)
+            valid_mask = np.isfinite(flat_conf)
+            self.all_conf_flat = flat_conf[valid_mask]
+            
             if self.all_conf_flat.size > 0:
                 # Pre-calculate the absolute threshold based on current percentage
-                self.abs_threshold = np.percentile(self.all_conf_flat, self.vis_threshold)
+                try:
+                    self.abs_threshold = float(np.percentile(self.all_conf_flat, self.vis_threshold))
+                except Exception as e:
+                    print(f"Warning: Failed to calculate percentile: {e}. Setting threshold to 0.")
+                    self.abs_threshold = 0.0
             else:
-                print("Warning: No points with confidence > 1e-6 found. Setting threshold to 0.")
+                print("Warning: No valid finite points with confidence > 1e-6 found. Setting threshold to 0.")
                 self.all_conf_flat = None
                 self.abs_threshold = 0.0
         else:

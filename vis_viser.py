@@ -114,6 +114,12 @@ def main():
     
     args = parser.parse_args()
 
+    # Automatically set image_folder to results_dir if mask_sky is enabled but no folder provided.
+    # This ensures that sky masks are cached in results_dir_sky_masks/ instead of re-running.
+    if args.mask_sky and args.image_folder is None:
+        args.image_folder = args.results_dir
+        print(f"Sky masking enabled: using {args.results_dir} as image source for masks.")
+
     pred_dict = load_saved_results(args.results_dir, stride=args.stride, first_k=args.first_k, max_workers=args.workers)
     
     # Note: PointCloudViewer expectations
