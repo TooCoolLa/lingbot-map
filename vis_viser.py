@@ -9,64 +9,68 @@ from tqdm import tqdm
 
 from lingbot_map.vis import PointCloudViewer
 
-def load_saved_results(results_dir):
-    """Load results saved by demo.py --save_results."""
-    print(f"Loading results from {results_dir}...")
+import concurrent.futures
+
+def load_frame(f, results_dir):
+    """Worker function to load a single frame's data."""
+    data = np.load(f)
+    frame_data = {
+        "depth": data["depth"],
+        "depth_conf": data["depth_conf"],
+        "extrinsic": data["extrinsic"],
+        "intrinsic": data["intrinsic"],
+    }
+    if "world_points" in data:
+        frame_data["world_points"] = data["world_points"]
+    
+    # Load corresponding image
+    frame_idx = os.path.basename(f).replace("frame_", "").replace(".npz", "")
+    img_path = os.path.join(results_dir, f"frame_{frame_idx}.png")
+    if os.path.exists(img_path):
+        img = np.array(Image.open(img_path).convert("RGB")).astype(np.float32) / 255.0
+        frame_data["image"] = img.transpose(2, 0, 1) # (3, H, W)
+    else:
+        H, W = data["depth"].shape[:2]
+        frame_data["image"] = np.zeros((3, H, W), dtype=np.float32)
+    
+    return frame_data
+
+def load_saved_results(results_dir, stride=1, first_k=-1, max_workers=8):
+    """Load results saved by demo.py --save_results using multi-threading."""
+    print(f"Loading results from {results_dir} (stride={stride}, first_k={first_k}) using {max_workers} workers...")
     
     # Find all frame NPZ files
     frame_files = sorted(glob.glob(os.path.join(results_dir, "frame_*.npz")))
     if not frame_files:
-        # Try finding a single combined file if implemented that way
-        combined_file = os.path.join(results_dir, "results.npz")
-        if os.path.exists(combined_file):
-            data = np.load(combined_file)
-            # Reconstruct pred_dict logic would go here
-            # But demo.py saves per-frame, so let's focus on that
-            pass
-        else:
-            raise FileNotFoundError(f"No results found in {results_dir}")
+        raise FileNotFoundError(f"No results found in {results_dir}")
 
-    # Load per-frame data
-    all_depths = []
-    all_confs = []
-    all_extrinsics = []
-    all_intrinsics = []
-    all_images = []
-    all_world_points = []
+    # Apply stride and first_k
+    if stride > 1:
+        frame_files = frame_files[::stride]
+    if first_k > 0:
+        frame_files = frame_files[:first_k]
 
-    for f in tqdm(frame_files, desc="Loading frames"):
-        data = np.load(f)
-        all_depths.append(data["depth"])
-        all_confs.append(data["depth_conf"])
-        all_extrinsics.append(data["extrinsic"])
-        all_intrinsics.append(data["intrinsic"])
-        if "world_points" in data:
-            all_world_points.append(data["world_points"])
-        
-        # Load corresponding image
-        frame_idx = os.path.basename(f).replace("frame_", "").replace(".npz", "")
-        img_path = os.path.join(results_dir, f"frame_{frame_idx}.png")
-        if os.path.exists(img_path):
-            img = np.array(Image.open(img_path).convert("RGB")).astype(np.float32) / 255.0
-            all_images.append(img.transpose(2, 0, 1)) # (3, H, W)
-        else:
-            # Placeholder if image missing
-            H, W = data["depth"].shape[:2]
-            all_images.append(np.zeros((3, H, W), dtype=np.float32))
+    # Load data in parallel
+    results = [None] * len(frame_files)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Map file paths to indices to maintain order
+        future_to_idx = {executor.submit(load_frame, f, results_dir): i for i, f in enumerate(frame_files)}
+        for future in tqdm(concurrent.futures.as_completed(future_to_idx), total=len(frame_files), desc="Loading frames"):
+            idx = future_to_idx[future]
+            results[idx] = future.result()
 
+    # Reorganize into pred_dict
     pred_dict = {
-        "depth": np.stack(all_depths),
-        "depth_conf": np.stack(all_confs),
-        "extrinsic": np.stack(all_extrinsics),
-        "intrinsic": np.stack(all_intrinsics),
-        "images": np.stack(all_images),
+        "depth": np.stack([r["depth"] for r in results]),
+        "depth_conf": np.stack([r["depth_conf"] for r in results]),
+        "extrinsic": np.stack([r["extrinsic"] for r in results]),
+        "intrinsic": np.stack([r["intrinsic"] for r in results]),
+        "images": np.stack([r["image"] for r in results]),
     }
     
-    if all_world_points:
-        pred_dict["world_points"] = np.stack(all_world_points)
-        # Use existing conf if available
-        if "world_points_conf" in data:
-             pred_dict["world_points_conf"] = pred_dict["depth_conf"]
+    if "world_points" in results[0]:
+        pred_dict["world_points"] = np.stack([r["world_points"] for r in results])
+        pred_dict["world_points_conf"] = pred_dict["depth_conf"]
 
     return pred_dict
 
@@ -80,10 +84,13 @@ def main():
     parser.add_argument("--point_size", type=float, default=0.00001, help="Point size")
     parser.add_argument("--mask_sky", action="store_true", help="Apply sky masking (requires --image_folder)")
     parser.add_argument("--image_folder", type=str, default=None, help="Original image folder (required for sky masking)")
+    parser.add_argument("--stride", type=int, default=1, help="Load every N-th frame from the results directory")
+    parser.add_argument("--first_k", type=int, default=-1, help="Only load the first K frames")
+    parser.add_argument("--workers", type=int, default=os.cpu_count(), help="Number of parallel workers for loading data (default: all CPU cores)")
     
     args = parser.parse_args()
 
-    pred_dict = load_saved_results(args.results_dir)
+    pred_dict = load_saved_results(args.results_dir, stride=args.stride, first_k=args.first_k, max_workers=args.workers)
     
     # Note: PointCloudViewer expectations
     # pred_dict needs to be in a slightly different format sometimes? 
