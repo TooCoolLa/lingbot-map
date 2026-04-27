@@ -75,7 +75,8 @@ def main():
     parser.add_argument("--results_dir", type=str, required=True, help="Directory containing saved results")
     parser.add_argument("--port", type=int, default=8080, help="Viser server port")
     parser.add_argument("--conf_percentile", type=float, default=50.0, help="Initial confidence percentile filter (0-100)")
-    parser.add_argument("--downsample_factor", type=int, default=10, help="Point cloud downsample factor")
+    parser.add_argument("--downsample_factor", type=int, default=1, 
+                        help="Point cloud downsample factor (e.g., 10 means sample 1 point out of every 10 points. Default: 1, no downsampling)")
     parser.add_argument("--point_size", type=float, default=0.00001, help="Point size")
     parser.add_argument("--mask_sky", action="store_true", help="Apply sky masking (requires --image_folder)")
     parser.add_argument("--image_folder", type=str, default=None, help="Original image folder (required for sky masking)")
