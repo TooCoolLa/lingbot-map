@@ -222,7 +222,9 @@ def _apply_sky_mask(
             skyseg_model_path
         )
 
-    skyseg_session = onnxruntime.InferenceSession(skyseg_model_path)
+    providers = onnxruntime.get_available_providers()
+    selected_providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"] if p in providers]
+    skyseg_session = onnxruntime.InferenceSession(skyseg_model_path, providers=selected_providers)
     sky_mask_list = []
 
     for i, image_name in enumerate(image_list[:S]):

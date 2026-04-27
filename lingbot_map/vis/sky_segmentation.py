@@ -189,7 +189,9 @@ def load_or_create_sky_masks(
     if not os.path.exists(skyseg_model_path):
         download_skyseg_model(skyseg_model_path)
 
-    skyseg_session = onnxruntime.InferenceSession(skyseg_model_path)
+    providers = onnxruntime.get_available_providers()
+    selected_providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"] if p in providers]
+    skyseg_session = onnxruntime.InferenceSession(skyseg_model_path, providers=selected_providers)
     sky_masks = []
 
     # Setup directories
