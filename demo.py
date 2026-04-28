@@ -344,6 +344,10 @@ def main():
     parser.add_argument("--window_size", type=int, default=64, help="Frames per window (windowed mode)")
     parser.add_argument("--overlap_size", type=int, default=16,
                         help="Overlap between windows in *actual frames*")
+    parser.add_argument("--no_kv_cache_transfer", action="store_true",
+                        help="Disable KV cache transfer across windows (fallback to full recomputation)")
+    parser.add_argument("--kv_cache_alignment_check", action="store_true",
+                        help="Print per-window alignment drift info (diagnostic for KV cache transfer)")
 
     # Visualization
     parser.add_argument("--port", type=int, default=8080)
@@ -361,6 +365,11 @@ def main():
     args = parser.parse_args()
     assert args.image_folder or args.video_path, \
         "Provide --image_folder or --video_path"
+
+    # Enable alignment-drift logging when the user requests diagnostics
+    if args.kv_cache_alignment_check:
+        import logging
+        logging.getLogger("lingbot_map.models.gct_stream_window").setLevel(logging.INFO)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -488,7 +497,8 @@ def main():
                 overlap_size=args.overlap_size,
                 num_scale_frames=args.num_scale_frames,
                 keyframe_interval=args.keyframe_interval,
-                output_device=output_device
+                output_device=output_device,
+                kv_cache_transfer=not args.no_kv_cache_transfer,
             )
 
     print(f"Inference done in {time.time() - t0:.1f}s")

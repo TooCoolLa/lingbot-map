@@ -338,6 +338,57 @@ class GCTStream(GCTBase):
         else:
             logger.warning("Camera head does not support KV cache cleaning")
 
+    def prepare_next_window(self, overlap_keyframes: int):
+        """
+        Prepare KV cache for the next window via KV-cache transfer.
+
+        Extracts overlap frames from the current window's KV cache, resets
+        the cache, and re-inserts those frames as scale frames.  The
+        aggregator's ``total_frames_processed`` is preserved for RoPE
+        continuity.  The camera head's KV cache is NOT reset (continuous
+        accumulation across windows).
+
+        Args:
+            overlap_keyframes: Number of tail keyframes to carry over.
+        """
+        if hasattr(self.aggregator, 'prepare_next_window'):
+            self.aggregator.prepare_next_window(overlap_keyframes)
+        else:
+            logger.warning(
+                "Aggregator does not support prepare_next_window; "
+                "falling back to clean_kv_cache()"
+            )
+            self.clean_kv_cache()
+        # Camera head: do NOT reset — continuous accumulation across windows
+
+    @staticmethod
+    def _log_alignment_drift(
+        s: torch.Tensor,
+        R: torch.Tensor,
+        t: torch.Tensor,
+        win_idx: int,
+    ):
+        """Log alignment drift for KV-cache transfer diagnostics.
+
+        When KV cache is transferred across windows, the pairwise alignment
+        (s, R, t) should be close to identity if the implicit coordinate
+        continuation is working well.  Large drift indicates the explicit
+        alignment correction is load-bearing.
+        """
+        s_dev = abs(s.mean().item() - 1.0)
+        R_dev = (R - torch.eye(3, device=R.device, dtype=R.dtype)).norm().item()
+        t_dev = t.norm(dim=-1).mean().item()
+        logger.info(
+            f"Window {win_idx} alignment drift: "
+            f"scale={s_dev:.4f}, rot={R_dev:.4f}, trans={t_dev:.4f}"
+        )
+        if s_dev > 0.1 or R_dev > 0.1:
+            logger.warning(
+                f"Significant coordinate drift in window {win_idx}! "
+                f"KV cache transfer may not preserve coordinate system well. "
+                f"(scale_dev={s_dev:.4f}, rot_dev={R_dev:.4f})"
+            )
+
     def _set_skip_append(self, skip: bool):
         """Set _skip_append flag on all KV caches (aggregator + camera head).
 
@@ -934,6 +985,8 @@ class GCTStream(GCTBase):
                 s_rel, R_rel, t_rel = self._pairwise_alignment(
                     warped_windows[-1], raw, overlap, nb, dev, dt,
                 )
+                # Log alignment drift (useful for KV-cache transfer diagnostics)
+                self._log_alignment_drift(s_rel, R_rel, t_rel, idx)
 
             per_window_scales.append(s_rel.clone())
             T = torch.eye(4, device=dev, dtype=dt).unsqueeze(0).expand(nb, -1, -1).clone()
@@ -968,6 +1021,7 @@ class GCTStream(GCTBase):
         keyframe_interval: int = 1,
         flow_threshold: float = 0.0,
         max_non_keyframe_gap: int = 30,
+        kv_cache_transfer: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Windowed inference with keyframe detection and cross-window alignment.
@@ -976,6 +1030,13 @@ class GCTStream(GCTBase):
         Overlap frames between windows are the next window's scale frames
         (bidirectional attention), ensuring the highest quality predictions
         at alignment boundaries.
+
+        When ``kv_cache_transfer=True`` (default), the overlap frames' KV
+        cache from the previous window is carried over to the next window
+        instead of being recomputed from scratch.  This skips Phase 1 for
+        subsequent windows, reducing redundant computation.  Cross-window
+        coordinate alignment (``_pairwise_alignment`` + ``_warp_predictions``)
+        is always applied as a mandatory correctness guarantee.
 
         ``window_size`` counts **keyframes** (frames stored in KV cache),
         including scale frames.  When ``keyframe_interval > 1``, each window
@@ -1093,30 +1154,76 @@ class GCTStream(GCTBase):
                 window_start = cursor
                 window_scale = min(ws, S - cursor)
 
-                # Fresh KV cache
-                self.clean_kv_cache()
+                if window_idx == 0 or not kv_cache_transfer:
+                    # First window or fallback: full clean + Phase 1
+                    self.clean_kv_cache()
+                else:
+                    # KV cache transfer: carry overlap frames forward
+                    # Use eff_overlap as the number of overlap keyframes
+                    # (clamped to available cache frames)
+                    overlap_kf = min(
+                        eff_overlap,
+                        self.aggregator.total_frames_processed,
+                    )
+                    if overlap_kf > 0:
+                        self.prepare_next_window(overlap_kf)
+                    else:
+                        self.clean_kv_cache()
 
-                # ---------- Phase 1: scale frames ----------
-                scale_images = images[:, cursor:cursor + window_scale].to(
-                    _model_device, non_blocking=True
-                )
-                scale_out = self.forward(
-                    scale_images,
-                    num_frame_for_scale=window_scale,
-                    num_frame_per_block=window_scale,
-                    causal_inference=True,
-                )
-                w_lists = _new_lists()
-                _collect_frame(scale_out, w_lists)
-                w_lists['frame_type'].extend([0] * window_scale)  # scale frames
+                if window_idx == 0 or not kv_cache_transfer:
+                    # ---------- Phase 1: scale frames ----------
+                    scale_images = images[:, cursor:cursor + window_scale].to(
+                        _model_device, non_blocking=True
+                    )
+                    scale_out = self.forward(
+                        scale_images,
+                        num_frame_for_scale=window_scale,
+                        num_frame_per_block=window_scale,
+                        causal_inference=True,
+                    )
+                    w_lists = _new_lists()
+                    _collect_frame(scale_out, w_lists)
+                    w_lists['frame_type'].extend([0] * window_scale)  # scale frames
 
-                # Flow state: last keyframe = last scale frame
-                last_kf_pose_enc = scale_out["pose_enc"][:, -1:]
-                last_kf_local_idx = window_scale - 1
-                del scale_out
+                    # Flow state: last keyframe = last scale frame
+                    last_kf_pose_enc = scale_out["pose_enc"][:, -1:]
+                    last_kf_local_idx = window_scale - 1
+                    del scale_out
 
-                cursor += window_scale
-                pbar.update(window_scale)
+                    cursor += window_scale
+                    pbar.update(window_scale)
+                else:
+                    # KV cache transferred: overlap frames already in cache
+                    # as scale frames.  We still need predictions for them
+                    # (for alignment), but we skip Phase 1 computation.
+                    # Re-run the overlap frames through Phase 2 to get
+                    # predictions (they attend to the transferred KV cache).
+                    w_lists = _new_lists()
+
+                    # Process overlap frames as scale frames (predictions only)
+                    overlap_start = cursor
+                    overlap_end = cursor + eff_overlap
+                    for oi in range(overlap_start, min(overlap_end, S)):
+                        frame_image = images[:, oi:oi + 1].to(
+                            _model_device, non_blocking=True
+                        )
+                        frame_out = self.forward(
+                            frame_image,
+                            num_frame_for_scale=window_scale,
+                            num_frame_per_block=1,
+                            causal_inference=True,
+                        )
+                        _collect_frame(frame_out, w_lists)
+                        w_lists['frame_type'].append(0)  # scale frames
+                        del frame_out
+
+                    # Flow state: last keyframe = last overlap frame
+                    if w_lists['pose_enc']:
+                        last_kf_pose_enc = w_lists['pose_enc'][-1][:, -1:]
+                    last_kf_local_idx = eff_overlap - 1
+
+                    cursor = overlap_end
+                    pbar.update(overlap_end - overlap_start)
 
                 # ---------- Phase 2: stream until enough keyframes ----------
                 target_kf = window_size - window_scale  # keyframes to collect
@@ -1205,7 +1312,7 @@ class GCTStream(GCTBase):
                         break
 
             all_window_predictions: List[Dict] = []
-            for start, end in tqdm(windows, desc='Windowed inference'):
+            for win_idx, (start, end) in enumerate(tqdm(windows, desc='Windowed inference')):
                 # Slice on whichever device `images` lives on, then move just
                 # this window to the model device.  Keeps peak memory at one
                 # window instead of the full sequence.
@@ -1213,26 +1320,60 @@ class GCTStream(GCTBase):
                     _model_device, non_blocking=True
                 )
                 window_len = end - start
-
-                # Fresh KV cache
-                self.clean_kv_cache()
-
                 window_scale = min(ws, window_len)
 
-                # ---------- Phase 1: scale frames ----------
-                scale_out = self.forward(
-                    window_images[:, :window_scale],
-                    num_frame_for_scale=window_scale,
-                    num_frame_per_block=window_scale,
-                    causal_inference=True,
-                )
-                w_lists = _new_lists()
-                _collect_frame(scale_out, w_lists)
-                w_lists['frame_type'].extend([0] * window_scale)  # scale frames
-                del scale_out
+                if win_idx == 0 or not kv_cache_transfer:
+                    # First window or fallback: full clean + Phase 1
+                    self.clean_kv_cache()
+
+                    # ---------- Phase 1: scale frames ----------
+                    scale_out = self.forward(
+                        window_images[:, :window_scale],
+                        num_frame_for_scale=window_scale,
+                        num_frame_per_block=window_scale,
+                        causal_inference=True,
+                    )
+                    w_lists = _new_lists()
+                    _collect_frame(scale_out, w_lists)
+                    w_lists['frame_type'].extend([0] * window_scale)  # scale frames
+                    del scale_out
+
+                    # ---------- Phase 2: stream remaining frames ----------
+                    phase2_start = window_scale
+                else:
+                    # KV cache transfer: carry overlap frames forward
+                    overlap_kf = min(
+                        eff_overlap,
+                        self.aggregator.total_frames_processed,
+                    )
+                    if overlap_kf > 0:
+                        self.prepare_next_window(overlap_kf)
+                    else:
+                        self.clean_kv_cache()
+
+                    # Overlap frames are already in cache as scale frames.
+                    # Re-run them through Phase 2 to get predictions for
+                    # alignment, then continue with new frames.
+                    w_lists = _new_lists()
+
+                    for oi in range(eff_overlap):
+                        frame_image = window_images[:, oi:oi + 1].to(
+                            _model_device, non_blocking=True
+                        )
+                        frame_out = self.forward(
+                            frame_image,
+                            num_frame_for_scale=window_scale,
+                            num_frame_per_block=1,
+                            causal_inference=True,
+                        )
+                        _collect_frame(frame_out, w_lists)
+                        w_lists['frame_type'].append(0)  # scale frames
+                        del frame_out
+
+                    phase2_start = eff_overlap
 
                 # ---------- Phase 2: stream remaining frames ----------
-                for i in range(window_scale, window_len):
+                for i in range(phase2_start, window_len):
                     is_keyframe = (
                         kf_int <= 1
                         or ((i - window_scale) % kf_int == 0)
@@ -1258,10 +1399,10 @@ class GCTStream(GCTBase):
                 all_window_predictions.append(_make_window_pred(w_lists))
 
         # Store for merge helpers
-        self._last_window_size = eff_overlap  # not used directly, but kept for compat
+        self._last_window_size = ws  # scale-frame count per window
         self._last_overlap_size = eff_overlap
 
-        # Align and stitch windows
+        # Align and stitch windows (always applied as correctness guarantee)
         predictions = self._align_and_stitch_windows(
             all_window_predictions, scale_mode=scale_mode
         )

@@ -40,7 +40,7 @@ Public API is drop-in compatible with the previous FlashInferKVCacheManager:
 
 import collections
 import math
-from typing import List
+from typing import List, Tuple
 
 import torch
 from torch import Tensor
@@ -420,6 +420,157 @@ class FlashInferKVCacheManager:
             paged_kv_cache = self.kv_caches[block_idx],
         )  # → [q_len, H, D]
 
+    def extract_overlap_kv(self, overlap_keyframes: int) -> dict:
+        """
+        Extract the last ``overlap_keyframes`` frames' KV data from the cache.
+
+        Used by windowed inference KV-cache transfer: the overlap frames from
+        the previous window are re-inserted as scale frames for the next window,
+        avoiding redundant Phase-1 recomputation.
+
+        The returned per-frame tensors are in the same layout as the input to
+        ``append_frame``: [num_special_tokens, H, D] for specials and
+        [patches_per_frame, H, D] for patches, so they can be passed directly
+        to ``append_frame`` after a ``reset()``.
+
+        Each block has its own KV content, so the returned dict is keyed by
+        block index.
+
+        Args:
+            overlap_keyframes: Number of tail frames to extract.
+
+        Returns:
+            dict with per-block keys ``block_{i}``, each containing:
+              - ``patch_k``: [overlap_keyframes, patches_per_frame, H, D]
+              - ``patch_v``: [overlap_keyframes, patches_per_frame, H, D]
+              - ``special_k``: [overlap_keyframes, num_special_tokens, H, D]
+              - ``special_v``: [overlap_keyframes, num_special_tokens, H, D]
+
+        Raises:
+            ValueError: If ``overlap_keyframes`` exceeds available frames or
+                the overlap frames have already been evicted from the window.
+        """
+        block0 = 0  # All blocks have identical page structure
+        total_frames = self.frame_count[block0]
+        if overlap_keyframes > total_frames:
+            raise ValueError(
+                f"overlap_keyframes={overlap_keyframes} > total frames={total_frames}"
+            )
+
+        # Check that overlap frames haven't been evicted from live_window.
+        # Scale frames are never evicted, so only window frames matter.
+        n_scale = len(self.scale_patch_pages[block0])
+        n_window = len(self.live_window_patch_pages[block0])
+        overlap_in_window = max(overlap_keyframes - n_scale, 0)
+        if overlap_in_window > n_window:
+            raise ValueError(
+                f"overlap_keyframes={overlap_keyframes} requires {overlap_in_window} "
+                f"window frames, but only {n_window} remain (evicted by sliding window). "
+                f"Increase sliding_window_size or decrease overlap_keyframes."
+            )
+
+        # Collect patch page IDs for the last overlap_keyframes frames.
+        # Frames are ordered: scale_patch_pages (oldest) → live_window_patch_pages (newest).
+        # The last overlap_keyframes frames span the tail of scale + all of window
+        # (or a suffix of scale if overlap <= n_scale).
+        all_patch_pages = (
+            list(self.scale_patch_pages[block0])
+            + list(self.live_window_patch_pages[block0])
+        )
+        overlap_patch_page_ids = all_patch_pages[-overlap_keyframes:]
+
+        # Collect special tokens for the last overlap_keyframes frames.
+        # Special tokens are packed contiguously in all_special_pages.
+        n_sp = self.num_special_tokens
+        total_special = self.special_token_count[block0]
+        overlap_special_start = total_special - overlap_keyframes * n_sp
+
+        P = self.patches_per_frame
+        H = self.num_heads
+        D = self.head_dim
+
+        result = {}
+        for block_idx in range(self.num_blocks):
+            patch_k_list = []
+            patch_v_list = []
+            special_k_list = []
+            special_v_list = []
+
+            for f in range(overlap_keyframes):
+                # Patch data: one page per frame
+                pid = overlap_patch_page_ids[f]
+                pk = self.kv_caches[block_idx][pid, 0, :P].clone()  # [P, H, D]
+                pv = self.kv_caches[block_idx][pid, 1, :P].clone()
+                patch_k_list.append(pk)
+                patch_v_list.append(pv)
+
+                # Special data: n_sp tokens starting at (overlap_special_start + f * n_sp)
+                sp_start = overlap_special_start + f * n_sp
+                sp_k, sp_v = self._read_special_tokens(block_idx, sp_start, n_sp)
+                special_k_list.append(sp_k)
+                special_v_list.append(sp_v)
+
+            result[f"block_{block_idx}"] = {
+                "patch_k": torch.stack(patch_k_list, dim=0),    # [overlap_kf, P, H, D]
+                "patch_v": torch.stack(patch_v_list, dim=0),
+                "special_k": torch.stack(special_k_list, dim=0), # [overlap_kf, n_sp, H, D]
+                "special_v": torch.stack(special_v_list, dim=0),
+            }
+
+        return result
+
+    def _read_special_tokens(
+        self, block_idx: int, token_offset: int, count: int
+    ) -> Tuple[Tensor, Tensor]:
+        """Read ``count`` special tokens starting at ``token_offset`` from the
+        packed special stream.
+
+        Returns:
+            (k, v) each of shape [count, H, D].
+        """
+        P = self.page_size
+        k_parts, v_parts = [], []
+        remaining = count
+        pos = token_offset
+
+        while remaining > 0:
+            page_idx = pos // P
+            within = pos % P
+            page_id = self.all_special_pages[block_idx][page_idx]
+            n = min(remaining, P - within)
+            k_parts.append(self.kv_caches[block_idx][page_id, 0, within:within + n])
+            v_parts.append(self.kv_caches[block_idx][page_id, 1, within:within + n])
+            pos += n
+            remaining -= n
+
+        return torch.cat(k_parts, dim=0), torch.cat(v_parts, dim=0)
+
+    def reinsert_overlap_kv(self, overlap_data: dict) -> None:
+        """
+        Re-insert overlap frames extracted by ``extract_overlap_kv`` into a
+        freshly-reset cache.  Frames are appended via ``append_frame`` so that
+        routing (scale vs window) and special-token packing are handled
+        correctly.
+
+        Must be called **after** ``reset()``.
+
+        Args:
+            overlap_data: Dict returned by ``extract_overlap_kv``, keyed by
+                ``block_{i}`` with per-block KV tensors.
+        """
+        # Determine number of frames from block 0's data
+        block0_data = overlap_data["block_0"]
+        n_frames = block0_data["patch_k"].shape[0]
+        n = self.num_special_tokens
+        for f in range(n_frames):
+            for block_idx in range(self.num_blocks):
+                bd = overlap_data[f"block_{block_idx}"]
+                # Reconstruct full [tokens_per_frame, H, D] in the layout
+                # expected by append_frame: [specials | patches]
+                k = torch.cat([bd["special_k"][f], bd["patch_k"][f]], dim=0)
+                v = torch.cat([bd["special_v"][f], bd["patch_v"][f]], dim=0)
+                self.append_frame(block_idx, k, v)
+
     def reset(self) -> None:
         """Reset all per-block state for a new sequence."""
         for i in range(self.num_blocks):
@@ -430,6 +581,8 @@ class FlashInferKVCacheManager:
             self.free_special_pages[i] = list(range(self.max_patch_pages, self.max_num_pages))
             self.special_token_count[i] = 0
             self.frame_count[i] = 0
+        self._skip_append = False
+        self._defer_eviction = False
 
     # =========================================================================
     # Helper methods

@@ -247,6 +247,132 @@ class AggregatorStream(AggregatorBase):
         self._cached_pos3d = None
         logger.info("KV cache cleaned")
 
+    def prepare_next_window(self, overlap_keyframes: int) -> dict:
+        """
+        Prepare KV cache for the next window in windowed inference with
+        KV-cache transfer.
+
+        Extracts the last ``overlap_keyframes`` frames from the current KV
+        cache, fully resets the cache, then re-inserts those frames as scale
+        frames.  ``total_frames_processed`` is preserved (not reset to 0) so
+        that 3D RoPE absolute position indices remain continuous across
+        windows.
+
+        Must be called **after** the current window's inference is complete
+        and **before** the next window's Phase-2 streaming begins.
+
+        Args:
+            overlap_keyframes: Number of tail frames to carry over.
+
+        Returns:
+            dict with diagnostic info (extracted overlap data for logging).
+        """
+        # Save total_frames_processed before reset (RoPE continuity)
+        saved_total_frames = self.total_frames_processed
+
+        if self.use_sdpa:
+            overlap_data = self._extract_overlap_sdpa(overlap_keyframes)
+        else:
+            overlap_data = self._extract_overlap_flashinfer(overlap_keyframes)
+
+        # Full reset (clears all cache state)
+        if self.kv_cache_manager is not None:
+            self.kv_cache_manager.reset()
+        if self.kv_cache:
+            for key in list(self.kv_cache.keys()):
+                if key == "_skip_append":
+                    self.kv_cache[key] = False
+                else:
+                    self.kv_cache[key] = None
+
+        # Restore total_frames_processed (do NOT reset to 0)
+        self.total_frames_processed = saved_total_frames
+        self._cached_pos3d = None  # Force re-computation of 3D RoPE positions
+
+        # Re-insert overlap frames
+        if self.use_sdpa:
+            self._reinsert_overlap_sdpa(overlap_data, overlap_keyframes)
+        else:
+            self.kv_cache_manager.reinsert_overlap_kv(overlap_data)
+
+        logger.info(
+            f"Prepared next window: {overlap_keyframes} overlap frames transferred, "
+            f"total_frames_processed={self.total_frames_processed}"
+        )
+        return overlap_data
+
+    # ── FlashInfer overlap helpers ──────────────────────────────────────────
+
+    def _extract_overlap_flashinfer(self, overlap_keyframes: int) -> dict:
+        """Extract overlap KV data via FlashInfer manager."""
+        if self.kv_cache_manager is None:
+            raise RuntimeError(
+                "FlashInfer KV cache manager not initialized; "
+                "run at least one frame before calling prepare_next_window()"
+            )
+        return self.kv_cache_manager.extract_overlap_kv(overlap_keyframes)
+
+    # ── SDPA overlap helpers ────────────────────────────────────────────────
+
+    def _extract_overlap_sdpa(self, overlap_keyframes: int) -> dict:
+        """
+        Extract overlap KV data from SDPA dict-based cache.
+
+        SDPA cache layout per block *i*:
+          - k_{i} / v_{i}:          [B, H, num_cached_frames, tokens_per_frame, D]
+          - k_{i}_special / v_{i}_special: [B, H, num_evicted_frames, n_special, D]
+
+        The overlap frames must all reside in the main cache (not evicted).
+        Evicted frames only have their special tokens preserved in the special
+        cache — their patch KV is lost, making them unusable for overlap transfer.
+
+        We extract the overlap portion and return per-block tensors.
+        """
+        overlap_data = {}
+        for i in range(self.depth):
+            k_main = self.kv_cache.get(f"k_{i}")
+            v_main = self.kv_cache.get(f"v_{i}")
+
+            if k_main is None:
+                raise RuntimeError(
+                    f"SDPA KV cache for block {i} is empty; "
+                    "run at least one frame before calling prepare_next_window()"
+                )
+
+            num_cached = k_main.shape[2]  # total cached frames in main
+
+            if overlap_keyframes > num_cached:
+                raise ValueError(
+                    f"overlap_keyframes={overlap_keyframes} requires "
+                    f"{overlap_keyframes - num_cached} frames from the special "
+                    f"(evicted) cache, but evicted frames' patch KV is lost. "
+                    f"Only {num_cached} frames remain in the main cache. "
+                    f"Increase sliding_window_size or decrease overlap_keyframes."
+                )
+
+            # Overlap frames are entirely within the main cache
+            start = num_cached - overlap_keyframes
+            overlap_data[f"k_{i}"] = k_main[:, :, start:, :, :].clone()
+            overlap_data[f"v_{i}"] = v_main[:, :, start:, :, :].clone()
+            overlap_data[f"k_{i}_special"] = None
+            overlap_data[f"v_{i}_special"] = None
+
+        return overlap_data
+
+    def _reinsert_overlap_sdpa(self, overlap_data: dict, overlap_keyframes: int):
+        """
+        Re-insert overlap frames into a freshly-reset SDPA KV cache.
+
+        The overlap frames become the initial cache content.  Scale-frame
+        routing is implicit: the first ``kv_cache_scale_frames`` frames in
+        the cache are treated as scale frames by the SDPA attention logic.
+        """
+        for i in range(self.depth):
+            self.kv_cache[f"k_{i}"] = overlap_data[f"k_{i}"]
+            self.kv_cache[f"v_{i}"] = overlap_data[f"v_{i}"]
+            self.kv_cache[f"k_{i}_special"] = overlap_data[f"k_{i}_special"]
+            self.kv_cache[f"v_{i}_special"] = overlap_data[f"v_{i}_special"]
+
     def _init_3d_rope(self):
         """Initialize 3D RoPE for streaming inference."""
         if not self.enable_3d_rope:

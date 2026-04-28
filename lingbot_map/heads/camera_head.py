@@ -272,6 +272,28 @@ class CameraCausalHead(nn.Module):
         self.kv_cache = None
         self.frame_idx = 0
 
+    def rollback_last_frame(self):
+        """Rollback the most recent frame from the KV cache.
+
+        Trims the last frame from each iteration's cached K/V tensors
+        and decrements ``frame_idx``.  Used in flow-based keyframe mode
+        when a non-keyframe frame is discarded after forward pass.
+        """
+        if self.kv_cache is None:
+            return
+        for i in range(len(self.kv_cache)):
+            if self.kv_cache[i] is None:
+                continue
+            for key in list(self.kv_cache[i].keys()):
+                val = self.kv_cache[i][key]
+                if val is not None and torch.is_tensor(val) and val.dim() >= 3:
+                    if val.shape[2] > 1:
+                        self.kv_cache[i][key] = val[:, :, :-1]
+                    else:
+                        self.kv_cache[i][key] = None
+        if self.frame_idx > 0:
+            self.frame_idx -= 1
+
     def forward(self, aggregated_tokens_list: list, mask=None, num_iterations: int = None, causal_inference=False, num_frame_per_block=1, num_frame_for_scale=-1, sliding_window_size=None, **kwargs) -> list:
         """
         Forward pass to predict camera parameters.
