@@ -247,6 +247,65 @@ class AggregatorStream(AggregatorBase):
         self._cached_pos3d = None
         logger.info("KV cache cleaned")
 
+    def warm_start_kv_cache(self, keep_last_n: int):
+        """Retain the last ``keep_last_n`` frames in KV cache for warm-starting
+        the next window.  ``total_frames_processed`` is NOT reset so that
+        RoPE positions remain consistent across windows.
+
+        For the SDPA backend this is a simple tensor slice.  For FlashInfer
+        the paged design makes partial retention complex, so we fall back to
+        a full reset (equivalent to the original windowed behavior).
+
+        Args:
+            keep_last_n: Number of trailing frames to keep.  0 = full reset
+                         (equivalent to ``clean_kv_cache``).
+        """
+        if keep_last_n <= 0:
+            self.clean_kv_cache()
+            return
+
+        if self.use_sdpa:
+            # SDPA dict-based cache: slice trailing frames from dense tensors.
+            for i in range(self.depth):
+                for prefix in ("k_", "v_"):
+                    key = f"{prefix}{i}"
+                    tensor = self.kv_cache.get(key)
+                    if tensor is not None and torch.is_tensor(tensor):
+                        n = tensor.shape[2]
+                        if n > keep_last_n:
+                            self.kv_cache[key] = tensor[:, :, -keep_last_n:]
+
+                    # Evicted-frame special tokens reference frames that are
+                    # no longer in the main cache.  Drop them to avoid stale
+                    # context; the retained frames carry their own specials.
+                    skey = f"{prefix}{i}_special"
+                    if skey in self.kv_cache:
+                        self.kv_cache[skey] = None
+
+            # Reset control flags
+            if "_skip_append" in self.kv_cache:
+                self.kv_cache["_skip_append"] = False
+            if "_defer_eviction" in self.kv_cache:
+                self.kv_cache["_defer_eviction"] = False
+
+            # total_frames_processed NOT reset — keeps RoPE continuous
+            self._cached_pos3d = None
+            logger.info(
+                f"KV cache warm-started: keeping last {keep_last_n} frames, "
+                f"total_frames_processed={self.total_frames_processed}"
+            )
+        else:
+            # FlashInfer paged cache: partial retention is complex due to
+            # page deques + append-only special stream.  Fall back to reset.
+            if self.kv_cache_manager is not None:
+                self.kv_cache_manager.reset()
+            self.total_frames_processed = 0
+            self._cached_pos3d = None
+            logger.info(
+                "KV cache warm-start: FlashInfer backend does not support "
+                "partial retention; fell back to full reset"
+            )
+
     def _init_3d_rope(self):
         """Initialize 3D RoPE for streaming inference."""
         if not self.enable_3d_rope:

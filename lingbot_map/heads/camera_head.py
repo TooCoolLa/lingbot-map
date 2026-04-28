@@ -272,6 +272,38 @@ class CameraCausalHead(nn.Module):
         self.kv_cache = None
         self.frame_idx = 0
 
+    def warm_start_kv_cache(self, keep_last_n: int):
+        """Retain the last ``keep_last_n`` frames in KV cache for warm-starting
+        the next window.  ``frame_idx`` is NOT reset so that RoPE positions
+        remain consistent across windows.
+
+        Args:
+            keep_last_n: Number of trailing frames to keep.  0 = full reset
+                         (equivalent to ``clean_kv_cache``).
+        """
+        if keep_last_n <= 0 or self.kv_cache is None:
+            self.clean_kv_cache()
+            return
+
+        for cache_dict in self.kv_cache:
+            # Slice main KV entries: [B, H, num_cached, tpf, D]
+            for key in list(cache_dict.keys()):
+                if key.startswith(("k_", "v_")) and not key.endswith("_special"):
+                    tensor = cache_dict[key]
+                    if tensor is not None and torch.is_tensor(tensor):
+                        n = tensor.shape[2]
+                        if n > keep_last_n:
+                            cache_dict[key] = tensor[:, :, -keep_last_n:]
+                elif key.endswith("_special"):
+                    # Drop evicted-frame special tokens — they reference
+                    # frames that were already discarded, so keeping them
+                    # would introduce stale context.
+                    cache_dict[key] = None
+                elif key == "_skip_append":
+                    cache_dict[key] = False
+                elif key == "_defer_eviction":
+                    cache_dict[key] = False
+
     def forward(self, aggregated_tokens_list: list, mask=None, num_iterations: int = None, causal_inference=False, num_frame_per_block=1, num_frame_for_scale=-1, sliding_window_size=None, **kwargs) -> list:
         """
         Forward pass to predict camera parameters.

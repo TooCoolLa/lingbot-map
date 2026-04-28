@@ -338,6 +338,28 @@ class GCTStream(GCTBase):
         else:
             logger.warning("Camera head does not support KV cache cleaning")
 
+    def warm_start_kv_cache(self, keep_last_n: int):
+        """Retain the last ``keep_last_n`` frames in KV cache for warm-starting
+        the next window.  Frame counters are NOT reset so that RoPE positions
+        remain consistent across windows.
+
+        Args:
+            keep_last_n: Number of trailing frames to keep.  0 = full reset
+                         (equivalent to ``clean_kv_cache``).
+        """
+        if hasattr(self.aggregator, 'warm_start_kv_cache'):
+            self.aggregator.warm_start_kv_cache(keep_last_n)
+        else:
+            logger.warning("Aggregator does not support warm-start; falling back to clean")
+            self.clean_kv_cache()
+            return
+        if self.camera_head is not None and hasattr(self.camera_head, 'warm_start_kv_cache'):
+            self.camera_head.warm_start_kv_cache(keep_last_n)
+        else:
+            logger.warning("Camera head does not support warm-start; falling back to clean")
+            if hasattr(self.camera_head, 'clean_kv_cache'):
+                self.camera_head.clean_kv_cache()
+
     def _set_skip_append(self, skip: bool):
         """Set _skip_append flag on all KV caches (aggregator + camera head).
 
@@ -933,14 +955,16 @@ class GCTStream(GCTBase):
         keyframe_interval: int = 1,
         flow_threshold: float = 0.0,
         max_non_keyframe_gap: int = 30,
+        enable_kv_sharing: bool = True,
+        do_alignment: Optional[bool] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Windowed inference with keyframe detection and cross-window alignment.
 
-        Each window is processed independently with a fresh KV cache.
-        Overlap frames between windows are the next window's scale frames
-        (bidirectional attention), ensuring the highest quality predictions
-        at alignment boundaries.
+        Each window is processed with its own KV cache.  When
+        ``enable_kv_sharing=True`` (default), the tail of the previous
+        window's KV cache is carried over so the next window can attend to
+        prior context, significantly improving cross-window consistency.
 
         ``window_size`` counts **keyframes** (frames stored in KV cache),
         including scale frames.  When ``keyframe_interval > 1``, each window
@@ -970,6 +994,11 @@ class GCTStream(GCTBase):
             Merged prediction dict with all frames.
         """
         use_flow_keyframe = flow_threshold > 0.0
+
+        # Default: skip geometric alignment when KV sharing is enabled,
+        # because the windows already share a consistent coordinate frame.
+        if do_alignment is None:
+            do_alignment = not enable_kv_sharing
 
         # Normalize input shape
         if len(images.shape) == 4:
@@ -1034,8 +1063,11 @@ class GCTStream(GCTBase):
                 window_start = cursor
                 window_scale = min(ws, S - cursor)
 
-                # Fresh KV cache
-                self.clean_kv_cache()
+                # KV cache: warm-start from previous window or clean slate
+                if window_idx == 0 or not enable_kv_sharing:
+                    self.clean_kv_cache()
+                else:
+                    self.warm_start_kv_cache(eff_overlap)
 
                 # ---------- Phase 1: scale frames ----------
                 scale_images = images[:, cursor:cursor + window_scale]
@@ -1142,12 +1174,15 @@ class GCTStream(GCTBase):
                         break
 
             all_window_predictions: List[Dict] = []
-            for start, end in tqdm(windows, desc='Windowed inference'):
+            for win_i, (start, end) in enumerate(tqdm(windows, desc='Windowed inference')):
                 window_images = images[:, start:end]
                 window_len = end - start
 
-                # Fresh KV cache
-                self.clean_kv_cache()
+                # KV cache: warm-start from previous window or clean slate
+                if win_i == 0 or not enable_kv_sharing:
+                    self.clean_kv_cache()
+                else:
+                    self.warm_start_kv_cache(eff_overlap)
 
                 window_scale = min(ws, window_len)
 
@@ -1190,13 +1225,27 @@ class GCTStream(GCTBase):
                 all_window_predictions.append(_make_window_pred(w_lists))
 
         # Store for merge helpers
-        self._last_window_size = eff_overlap  # not used directly, but kept for compat
         self._last_overlap_size = eff_overlap
+        if not use_flow_keyframe:
+            self._last_window_size = eff_window
+        else:
+            # Flow mode: no single window size; use overlap as placeholder
+            self._last_window_size = eff_overlap
 
-        # Align and stitch windows
-        predictions = self._align_and_stitch_windows(
-            all_window_predictions, scale_mode=scale_mode
-        )
+        # Stitch windows (with or without geometric alignment)
+        if do_alignment:
+            predictions = self._align_and_stitch_windows(
+                all_window_predictions, scale_mode=scale_mode
+            )
+        else:
+            # KV sharing keeps windows in a consistent coordinate frame,
+            # so geometric alignment is unnecessary — just de-dup overlap.
+            predictions = self._stitch_windows(
+                all_window_predictions,
+                window_size=self._last_window_size,
+                overlap=eff_overlap,
+            )
+            predictions["alignment_mode"] = "none"
 
         predictions["images"] = _to_out(images)
 
