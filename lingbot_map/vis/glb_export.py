@@ -9,7 +9,6 @@ GLB 3D export utilities for GCT predictions.
 """
 
 import os
-import copy
 from typing import Optional, Tuple
 
 import numpy as np
@@ -17,13 +16,7 @@ import cv2
 import matplotlib
 from scipy.spatial.transform import Rotation
 
-from lingbot_map.vis.sky_segmentation import (
-    _SKYSEG_INPUT_SIZE,
-    _SKYSEG_SOFT_THRESHOLD,
-    _mask_to_float,
-    _mask_to_uint8,
-    _result_map_to_non_sky_conf,
-)
+from lingbot_map.vis.sky_segmentation import apply_sky_segmentation
 
 try:
     import trimesh
@@ -200,50 +193,17 @@ def _apply_sky_mask(
     images: np.ndarray
 ) -> np.ndarray:
     """Apply sky segmentation mask to confidence scores."""
-    try:
-        import onnxruntime
-    except ImportError:
-        print("Warning: onnxruntime not available, skipping sky masking")
-        return conf
-
     target_dir_images = os.path.join(target_dir, "images")
     if not os.path.exists(target_dir_images):
         print(f"Warning: Images directory not found at {target_dir_images}")
         return conf
 
-    image_list = sorted(os.listdir(target_dir_images))
-    S, H, W = conf.shape if hasattr(conf, "shape") else (len(images), images.shape[1], images.shape[2])
-
-    skyseg_model_path = "skyseg.onnx"
-    if not os.path.exists(skyseg_model_path):
-        print("Downloading skyseg.onnx...")
-        download_file_from_url(
-            "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx",
-            skyseg_model_path
-        )
-
-    providers = onnxruntime.get_available_providers()
-    selected_providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"] if p in providers]
-    skyseg_session = onnxruntime.InferenceSession(skyseg_model_path, providers=selected_providers)
-    sky_mask_list = []
-
-    for i, image_name in enumerate(image_list[:S]):
-        image_filepath = os.path.join(target_dir_images, image_name)
-        mask_filepath = os.path.join(target_dir, "sky_masks", image_name)
-
-        if os.path.exists(mask_filepath):
-            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-        else:
-            sky_mask = segment_sky(image_filepath, skyseg_session, mask_filepath)
-
-        if sky_mask.shape[0] != H or sky_mask.shape[1] != W:
-            sky_mask = cv2.resize(sky_mask, (W, H), interpolation=cv2.INTER_LINEAR)
-
-        sky_mask_list.append(_mask_to_float(sky_mask))
-
-    sky_mask_array = np.array(sky_mask_list)
-    sky_mask_binary = (sky_mask_array > _SKYSEG_SOFT_THRESHOLD).astype(np.float32)
-    return conf * sky_mask_binary
+    sky_mask_dir = os.path.join(target_dir, "sky_masks")
+    return apply_sky_segmentation(
+        conf,
+        image_folder=target_dir_images,
+        sky_mask_dir=sky_mask_dir,
+    )
 
 
 def integrate_camera_into_scene(
@@ -418,72 +378,6 @@ def compute_camera_faces_multi(cone_shape: "trimesh.Trimesh", num_shells: int) -
 
     faces_list += [(v3, v2, v1) for v1, v2, v3 in faces_list]
     return np.array(faces_list)
-
-
-def segment_sky(
-    image_path: str,
-    onnx_session,
-    mask_filename: str
-) -> np.ndarray:
-    """
-    Segments sky from an image using an ONNX model.
-
-    Args:
-        image_path: Path to input image
-        onnx_session: ONNX runtime session with loaded model
-        mask_filename: Path to save the output mask
-
-    Returns:
-        Continuous non-sky confidence map in [0, 1]
-    """
-    image = cv2.imread(image_path)
-    result_map = run_skyseg(onnx_session, _SKYSEG_INPUT_SIZE, image)
-    result_map_original = cv2.resize(
-        result_map, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR
-    )
-    output_mask = _result_map_to_non_sky_conf(result_map_original)
-
-    os.makedirs(os.path.dirname(mask_filename), exist_ok=True)
-    cv2.imwrite(mask_filename, _mask_to_uint8(output_mask))
-    return output_mask
-
-
-def run_skyseg(
-    onnx_session,
-    input_size: Tuple[int, int],
-    image: np.ndarray
-) -> np.ndarray:
-    """
-    Runs sky segmentation inference using ONNX model.
-
-    Args:
-        onnx_session: ONNX runtime session
-        input_size: Target size for model input (width, height)
-        image: Input image in BGR format
-
-    Returns:
-        Segmentation mask
-    """
-    temp_image = copy.deepcopy(image)
-    resize_image = cv2.resize(temp_image, dsize=(input_size[0], input_size[1]))
-    x = cv2.cvtColor(resize_image, cv2.COLOR_BGR2RGB)
-    x = np.array(x, dtype=np.float32)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-    x = (x / 255 - mean) / std
-    x = x.transpose(2, 0, 1)
-    x = x.reshape(-1, 3, input_size[0], input_size[1]).astype("float32")
-
-    input_name = onnx_session.get_inputs()[0].name
-    output_name = onnx_session.get_outputs()[0].name
-    onnx_result = onnx_session.run([output_name], {input_name: x})
-
-    onnx_result = np.array(onnx_result).squeeze()
-    min_value = np.min(onnx_result)
-    max_value = np.max(onnx_result)
-    onnx_result = (onnx_result - min_value) / (max_value - min_value)
-    onnx_result *= 255
-    return onnx_result.astype("uint8")
 
 
 def download_file_from_url(url: str, filename: str):
