@@ -312,14 +312,12 @@ This builds `voxel_morton_ext` and `frustum_cull_ext` in place — both are impo
 
 ```bash
     python demo_render/batch_demo.py \
-    --video_path /data/demo_videos室内穿梭.MP4 \
-    --output_folder /data/outputs/室内穿梭/ \
+    --video_path /data/demo_videos/indoor_travel.MP4 \
+    --output_folder /data/outputs/indoor_travel/ \
     --model_path /path/to/lingbot-map.pt \
     --config demo_render/config/indoor.yaml \
     --mode windowed --window_size 128 \
     --keyframe_interval 13 --overlap_keyframes 8 \
-    --max_non_keyframe_gap 100 \
-    --first_k 25000 \
     --sky_mask_dir /data/outputs/sky_masks \
     --sky_mask_visualization_dir /data/outputs/sky_mask_viz \
     --camera_vis default --keyframes_only_points \
@@ -334,14 +332,83 @@ Flag-by-flag rationale:
 | `--mode windowed --window_size 128` | Sliding-window inference is required once the sequence exceeds the ~320-frame RoPE training range; each window resets the KV cache. **`window_size` counts KV-cache slots, not actual frames** — the first `num_scale_frames` (=8) slots hold the scale frames and the remaining `128 − 8 = 120` slots hold keyframes. With `keyframe_interval = 13`, one window therefore covers `8 + 120 × 13 = 1568` actual frames. |
 | `--keyframe_interval 13` | Cache only every 13th frame as a keyframe. Non-keyframes still emit per-frame predictions but don't grow the KV cache|
 | `--overlap_keyframes 8` | Adjacent windows share 8 keyframes of context, resolved internally to `max(num_scale_frames, 8 × keyframe_interval) = 8 × 13 = 104` actual frames of overlap. Recommended whenever `keyframe_interval > 1`, to keep cross-window pose alignment stable. |
-| `--max_non_keyframe_gap 100` | Safety cap on consecutive non-keyframes for flow-based keyframe mode; harmless here because `--flow_threshold` is left at 0. |
-| `--first_k 25000` | Only the first 25 000 frames of the source video are processed. |
 | `--config demo_render/config/indoor.yaml` | Seed render/scene/camera/overlay defaults from the indoor preset (short depth, tighter follow cam). Any CLI flag the user explicitly passes still overrides the YAML value. |
 | `--sky_mask_dir` / `--sky_mask_visualization_dir` | Persist sky masks and their side-by-side visualizations to disk so subsequent reruns reuse them instead of re-running ONNX segmentation. (The render pipeline only consumes them when sky masking is enabled — by the YAML preset or by `--mask_sky`.) |
 | `--camera_vis default` | Overlay the trajectory trail + recent-frame points on the rendered video. |
 | `--keyframes_only_points` | Only unproject keyframe depth into the point cloud; non-keyframes still contribute their pose to the trajectory/frustum overlay. Keeps the cloud sparse for very long sequences. |
 | `--frame_tag --frame_tag_position top_right` | Stamp a `<i> / <N> Frames` counter in the top-right corner of the MP4. |
 | `--save_predictions` | Persist per-frame NPZs alongside the MP4. Useful for inspection or for re-rendering with different camera/overlay settings later. |
+
+## Camera path
+
+The virtual camera path is described by the `camera.segments` list in the YAML preset passed via `--config`. Edit the YAML to design your own shot — no need to touch CLI flags.
+
+Built-in presets live in `demo_render/config/`: `default.yaml`, `indoor.yaml`, `indoor_overview.yaml`, `outdoor_large.yaml`, `outdoor_large_overview.yaml`, `surrounding.yaml`, `lingbo_world.yaml`. Copy one and edit the `camera:` block.
+
+### YAML structure
+
+```yaml
+camera:
+  fov: 60.0          # camera field of view in degrees
+  transition: 30     # frames blended between adjacent segments
+  segments:
+    - mode: follow            # chase cam following the input trajectory
+      frames: [0, 1500]       # rendered-frame range this segment covers (-1 = end)
+      back_offset: 0.3        # how far behind the input camera (fraction of scene scale)
+      up_offset: 0.08         # vertical lift above the input camera
+      look_offset: 0.4        # how far ahead the lookat target points
+      smooth_window: 30       # trajectory smoothing window in frames
+    - mode: birdeye           # rise up for a top-down reveal of the whole scene
+      frames: [1500, 1800]
+      reveal_height_mult: 2.5 # birdeye height = scene scale × this factor
+    - mode: follow            # drop back into chase cam
+      frames: [1800, -1]
+      back_offset: 0.3
+      up_offset: 0.08
+      look_offset: 0.4
+```
+
+`transition` controls how many frames are blended between adjacent segments; `frames: [0, -1]` means "the whole sequence".
+
+### Available modes
+
+| `mode` | Behavior | Tunable fields |
+|---|---|---|
+| `follow` | Chase cam tracks the input trajectory with smooth offsets. The most cinematic option for walkthroughs. | `back_offset`, `up_offset`, `look_offset`, `smooth_window`, `scale_frames` |
+| `birdeye` | Top-down reveal of the whole scene. Useful for hero / overview shots. | `reveal_height_mult` |
+| `static` | Fixed eye + lookat, auto-derived from the segment's start frame. | — |
+| `pivot` | Fixed eye, lookat sweeps along the trajectory. | — |
+
+### Single-shot YAML examples
+
+**Pure follow** (most common):
+
+```yaml
+camera:
+  fov: 60.0
+  segments:
+    - mode: follow
+      frames: [0, -1]
+      back_offset: 0.3
+      up_offset: 0.08
+      look_offset: 0.4
+      smooth_window: 30
+```
+
+**Full birdeye** (good for overview / hero shots):
+
+```yaml
+camera:
+  fov: 60.0
+  segments:
+    - mode: birdeye
+      frames: [0, -1]
+      reveal_height_mult: 2.5
+```
+
+**Follow with birdeye inserts**: just list multiple segments in order under `segments:` — adjacent segments are interpolated using `transition` frames.
+
+> Caveat: when `--config` loads a YAML preset, passing **any** segment-shaping CLI flag (`--camera_mode`, `--back_offset`, `--up_offset`, `--look_offset`, `--smooth_window`, `--follow_scale_frames`, `--birdeye_start`, `--birdeye_duration`, `--reveal_height_mult`) discards the YAML's `segments` and rebuilds the camera path from those flags instead. To stay fully YAML-driven, don't pass any of them on the command line.
 
 ## Output files
 
