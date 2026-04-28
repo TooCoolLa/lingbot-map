@@ -1203,16 +1203,16 @@ Examples:
         default="",
         choices=["", "default", "frustum", "textured", "trail"],
         help="Camera overlay preset.  '' disables the overlay (default).  "
-             "'default'=trail+points, 'frustum'=trail+wireframe frusta, "
-             "'textured'=trail+image-textured frusta, 'trail'=trail only.",
+            "'default'=trail+points, 'frustum'=trail+wireframe frusta, "
+            "'textured'=trail+image-textured frusta, 'trail'=trail only.",
     )
     parser.add_argument("--trail_color_ramp", type=str, default=None,
                         choices=["cyan_blue", "white", "rainbow", "red",
-                                 "green", "yellow", "magenta"],
+                                "green", "yellow", "magenta"],
                         help="Trajectory trail color ramp")
     parser.add_argument("--head_frustum_scale", type=float, default=None,
                         help="Frustum wireframe size as a fraction of scene scale "
-                             "(frustum/textured presets)")
+                            "(frustum/textured presets)")
     parser.add_argument("--head_frustum_color", type=str, default=None,
                         help="Frustum wireframe color (hex or name); '' = follow trail newest color")
     parser.add_argument("--trail_line_width", type=float, default=None,
